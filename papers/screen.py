@@ -25,7 +25,9 @@ __all__ = [
     "score_lexical",
     "score_l1",
     "passes_l0",
+    "paper_date",
     "bucket_of",
+    "is_review_row",
     "detect_injection",
     "LLMScreener",
     "L1_WEIGHTS",
@@ -358,12 +360,49 @@ def score_l1(paper, profile, query_hits: int = 0, today=None):
 
 
 # ── L0：元数据过滤 ──────────────────────────────────────────────────
-def passes_l0(paper, profile, min_year: int | None = None):
-    """返回 (是否通过, 原因)。原因用于诊断，避免静默丢弃。"""
-    year = paper.get("year")
+_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+
+
+def paper_date(paper):
+    """取论文的精确发表日期；只有年份时返回 None（交给调用方按年处理）。"""
+    match = _DATE_RE.match(clean_text(paper.get("published")))
+    if not match:
+        return None
+    try:
+        return _dt.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def passes_l0(paper, profile, min_year: int | None = None, min_date=None):
+    """返回 (是否通过, 原因)。原因用于诊断，避免静默丢弃。
+
+    min_date 与 min_year 的区别很关键，实测踩过：
+    `watch --days 7` 早期只传了年份（cutoff.year），于是"最近 7 天"退化成
+    "整个 2026 年"，一次给出 178 篇候选、74 篇"新增" —— 用户看到的根本不是
+    一周的量。凡是有精确发表日期的论文，必须按**日期**比较。
+    """
+    if min_date is not None:
+        precise = paper_date(paper)
+        if precise is not None:
+            if precise < min_date:
+                return False, f"发表于 {precise}，早于 {min_date}"
+        else:
+            # 只有年份：按年比较（宁可宽松，也不要因为缺日期而误杀）
+            year = paper.get("year")
+            if year is None:
+                return False, f"无日期信息（要求 >= {min_date}）"
+            if int(year) < min_date.year:
+                return False, f"年份 {year} < {min_date.year}"
+
     if min_year is not None:
+        year = paper.get("year")
         if year is None:
-            return False, f"年份未知（要求 >= {min_year}）"
+            # 有精确日期但没年份字段时，用日期推
+            precise = paper_date(paper)
+            if precise is None:
+                return False, f"年份未知（要求 >= {min_year}）"
+            year = precise.year
         if int(year) < int(min_year):
             return False, f"年份 {year} < {min_year}"
 
@@ -397,30 +436,60 @@ def _skip_reason(row):
     return None
 
 
+def is_review_row(row, profile) -> bool:
+    """该行是否属于"需人工确认"桶（与名次无关）。
+
+    render 需要先把它挑出来，才能在剩余论文里算名次 —— 否则名次会被
+    这些"不做语义判断"的论文占掉，压缩真正候选的展示名额。
+    """
+    if _skip_reason(row):
+        return True
+    abstract = clean_text(row["abstract"] if not isinstance(row, dict) else row.get("abstract"))
+    l1 = row["l1"] if not isinstance(row, dict) else row.get("l1")
+    l1 = 0.0 if l1 is None else float(l1)
+    return not abstract and l1 >= profile.thresholds["needs_review_l1_min"]
+
+
 # ── 分桶 ────────────────────────────────────────────────────────────
-def bucket_of(row, profile, has_llm: bool) -> str:
-    """决定论文进哪个桶：strong / maybe / review / archived。"""
+def bucket_of(row, profile, has_llm: bool, rank: int | None = None) -> str:
+    """决定论文进哪个桶：strong / maybe / review / archived。
+
+    rank 是它在本轮候选里的名次（1 起）。**L1-only 模式按名次分桶**，理由见
+    config.DEFAULT_THRESHOLDS 的注释：L1 分布太压缩，绝对阈值切不出层次。
+    传 rank=None 时退回绝对阈值，供单篇查询与测试使用。
+    """
     thresholds = profile.thresholds
     abstract = clean_text(row["abstract"] if not isinstance(row, dict) else row.get("abstract"))
     l2 = row["l2"] if not isinstance(row, dict) else row.get("l2")
     l1 = row["l1"] if not isinstance(row, dict) else row.get("l1")
     l1 = 0.0 if l1 is None else float(l1)
 
-    # 被主动跳过 L2 的（无摘要 / 疑似注入）一律进"需人工确认"，
-    # 不能让它们掉进 L1 分桶后冒充高分论文。
+    # 1) 被主动跳过 L2 的（无摘要 / 疑似注入）一律进"需人工确认"，
+    #    不能让它们掉进后面的分桶去冒充高分论文。
     if _skip_reason(row):
         return "review"
 
-    if has_llm and l2 is not None:
+    # 2) 有 L2 语义分时用绝对阈值（12 分制有实际含义，不需要按名次）
+    if l2 is not None:
         if l2 >= thresholds["l2_strong"]:
             return "strong"
         if l2 >= thresholds["l2_maybe"]:
             return "maybe"
         return "archived"
 
-    # 无 LLM：退化为 L1 阈值分桶，并单独把"无摘要"的挑出来交给人
+    # 3) 无摘要但 L1 不低：交给人判断，不让 LLM 猜
     if not abstract and l1 >= thresholds["needs_review_l1_min"]:
         return "review"
+
+    # 4) L1-only：按名次分桶，保证简报长度与语料规模无关
+    if rank is not None:
+        if rank <= thresholds["strong_top"]:
+            return "strong"
+        if rank <= thresholds["maybe_top"]:
+            return "maybe"
+        return "archived"
+
+    # 5) 没有名次信息（单篇查询 / 测试）时的兜底
     if l1 >= thresholds["l1_strong"]:
         return "strong"
     if l1 >= thresholds["l1_maybe"]:

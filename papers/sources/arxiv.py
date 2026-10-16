@@ -42,7 +42,15 @@ class ArxivSource:
         """执行一条 arXiv 查询并翻页到 limit 条。
 
         from_date: 'YYYY-MM-DD'，用于 watch 模式只看新论文。
+            这里会把它翻译成 arXiv 的 `submittedDate` 区间过滤，**在服务端就筛掉旧论文**。
+            不加这个也能靠 L0 在客户端过滤，但那样会白取回一堆旧论文、浪费流量
+            与限速配额（arXiv 是 3.2 秒/次）。
         """
+        if from_date:
+            digits = from_date.replace("-", "")
+            if len(digits) == 8 and digits.isdigit():
+                query = f"({query}) AND submittedDate:[{digits}0000 TO 299912312359]"
+
         papers = []
         start = 0
         while len(papers) < limit:

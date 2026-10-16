@@ -16,6 +16,8 @@ from papers.config import load_profile  # noqa: E402
 from papers.screen import (  # noqa: E402
     bucket_of,
     detect_injection,
+    is_review_row,
+    paper_date,
     passes_l0,
     score_l1,
     score_lexical,
@@ -236,6 +238,102 @@ class TestInjectionDefence(unittest.TestCase):
             "llm_json": json.dumps({"total": 9, "reason": "具体理由"}),
         }
         self.assertEqual(bucket_of(row, PROFILE, has_llm=True), "strong")
+
+
+class TestDateFiltering(unittest.TestCase):
+    """回归：`watch --days 7` 早期只按**年份**过滤，于是"最近 7 天"退化成
+    "整个 2026 年"，一次给出 178 篇候选 —— 用户看到的根本不是一周的量。"""
+
+    def test_precise_date_before_cutoff_rejected(self):
+        paper = {"title": "Audio jailbreak", "published": "2026-01-15", "year": 2026}
+        ok, reason = passes_l0(paper, PROFILE, min_date=_dt.date(2026, 10, 9))
+        self.assertFalse(ok)
+        self.assertIn("2026-01-15", reason)
+
+    def test_precise_date_after_cutoff_accepted(self):
+        paper = {"title": "Audio jailbreak on LALM", "published": "2026-10-12", "year": 2026}
+        ok, _ = passes_l0(paper, PROFILE, min_date=_dt.date(2026, 10, 9))
+        self.assertTrue(ok)
+
+    def test_year_only_falls_back_leniently(self):
+        """只有年份、没有精确日期时不该被误杀。"""
+        paper = {"title": "Audio jailbreak", "published": None, "year": 2026}
+        ok, _ = passes_l0(paper, PROFILE, min_date=_dt.date(2026, 10, 9))
+        self.assertTrue(ok)
+
+    def test_year_only_older_year_rejected(self):
+        paper = {"title": "Audio jailbreak", "published": None, "year": 2025}
+        ok, _ = passes_l0(paper, PROFILE, min_date=_dt.date(2026, 10, 9))
+        self.assertFalse(ok)
+
+    def test_missing_year_with_date_filter_rejected(self):
+        paper = {"title": "Audio jailbreak", "published": None, "year": None}
+        ok, _ = passes_l0(paper, PROFILE, min_date=_dt.date(2026, 10, 9))
+        self.assertFalse(ok)
+
+    def test_paper_date_parses_iso(self):
+        self.assertEqual(
+            paper_date({"published": "2026-10-12T03:00:00Z"}), _dt.date(2026, 10, 12)
+        )
+        self.assertIsNone(paper_date({"published": None}))
+        self.assertIsNone(paper_date({"published": "not a date"}))
+
+
+class TestRankBasedBucketing(unittest.TestCase):
+    """回归：848 篇候选被绝对阈值切成 106 篇"强烈建议读"—— 等于没筛。
+    改为按名次分桶，保证简报长度与语料规模无关。"""
+
+    def _row(self, l1, abstract="text"):
+        return {"l1": l1, "l2": None, "abstract": abstract, "llm_json": None}
+
+    def test_rank_within_strong_top(self):
+        self.assertEqual(
+            bucket_of(self._row(0.30), PROFILE, has_llm=False, rank=1), "strong"
+        )
+        self.assertEqual(
+            bucket_of(self._row(0.30), PROFILE, has_llm=False, rank=15), "strong"
+        )
+
+    def test_rank_in_maybe_range(self):
+        self.assertEqual(
+            bucket_of(self._row(0.30), PROFILE, has_llm=False, rank=16), "maybe"
+        )
+        self.assertEqual(
+            bucket_of(self._row(0.30), PROFILE, has_llm=False, rank=50), "maybe"
+        )
+
+    def test_rank_beyond_maybe_is_archived(self):
+        self.assertEqual(
+            bucket_of(self._row(0.30), PROFILE, has_llm=False, rank=51), "archived"
+        )
+        self.assertEqual(
+            bucket_of(self._row(0.30), PROFILE, has_llm=False, rank=800), "archived"
+        )
+
+    def test_rank_overrides_high_absolute_score(self):
+        """关键点：高分的第 800 名也必须是 archived，否则又回到 106 篇的老问题。"""
+        self.assertEqual(
+            bucket_of(self._row(0.88), PROFILE, has_llm=False, rank=800), "archived"
+        )
+
+    def test_low_score_at_rank_one_is_still_strong(self):
+        """名次优先：一轮只有 3 篇时，第 1 名即便分数低也该展示给人看。"""
+        self.assertEqual(
+            bucket_of(self._row(0.10), PROFILE, has_llm=False, rank=1), "strong"
+        )
+
+    def test_no_rank_falls_back_to_absolute(self):
+        self.assertEqual(bucket_of(self._row(0.90), PROFILE, has_llm=False), "strong")
+        self.assertEqual(bucket_of(self._row(0.10), PROFILE, has_llm=False), "archived")
+
+    def test_review_beats_rank(self):
+        """无摘要的论文即便排第 1 也要进"需人工确认"，不能冒充强推。"""
+        row = self._row(0.80, abstract="")
+        self.assertEqual(bucket_of(row, PROFILE, has_llm=False, rank=1), "review")
+        self.assertTrue(is_review_row(row, PROFILE))
+
+    def test_is_review_row_false_for_normal(self):
+        self.assertFalse(is_review_row(self._row(0.80), PROFILE))
 
 
 class TestBuckets(unittest.TestCase):

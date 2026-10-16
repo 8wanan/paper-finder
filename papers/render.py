@@ -24,8 +24,8 @@ SIDECAR_SUFFIX = ".pids.json"
 _BUCKET_TITLES = {
     "strong": "🔥 强烈建议读",
     "maybe": "📌 值得扫一眼",
-    "review": "🆕 需人工确认（无摘要）",
-    "archived": "🗄 已归档",
+    "review": "🆕 需人工确认（无摘要或疑似注入）",
+    "archived": "📦 其余候选（未展开）",
 }
 
 
@@ -162,15 +162,28 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
             {},
         )
 
-    rows = store.run_paper_rows(run["run_id"])
-    if reviewer is None:
-        from .screen import bucket_of
+    rows = list(store.run_paper_rows(run["run_id"]))
+    from .screen import bucket_of, is_review_row
 
-        reviewer = lambda row: bucket_of(row, profile, has_llm)  # noqa: E731
+    if reviewer is None:
+        reviewer = lambda row, rank: bucket_of(row, profile, has_llm, rank=rank)  # noqa: E731
+
+    # 先按分数排序并编号：L1-only 模式按名次分桶（绝对阈值切不出层次，见
+    # config.DEFAULT_THRESHOLDS 的注释）。编号时排除"需人工确认"的论文，
+    # 否则它们会占掉真正候选的展示名额。
+    rows.sort(
+        key=lambda r: (
+            -(r["l2"] if r["l2"] is not None else -1),
+            -(r["l1"] if r["l1"] is not None else -1),
+            -(r["year"] or 0),
+        )
+    )
+    rankable = [r for r in rows if not is_review_row(r, profile)]
+    rank_of = {row["pid"]: index + 1 for index, row in enumerate(rankable)}
 
     buckets = {"strong": [], "maybe": [], "review": [], "archived": []}
     for row in rows:
-        buckets[reviewer(row)].append(row)
+        buckets[reviewer(row, rank_of.get(row["pid"]))].append(row)
 
     for key in buckets:
         buckets[key].sort(
@@ -236,12 +249,13 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
         lines.append("")
 
     archived = buckets["archived"]
-    lines.append(f"## {_BUCKET_TITLES['archived']}（{len(archived)} 篇，默认折叠）")
+    lines.append(f"## {_BUCKET_TITLES['archived']}（{len(archived)} 篇）")
     lines.append("")
     if archived:
         lines.append(
-            f"这些论文分数低于阈值，被自动下沉。若其中有你想要的，"
-            f"用 `papers.py decide --pid <id> k` 手动救回。"
+            "这些是名次靠后的候选。**它们是后备队列，不是「已丢弃」** —— "
+            "分数在 0.45 以上的仍然值得一查。用 "
+            "`papers.py decide --pid <id> k` 可以把任意一篇提到你的队列里。"
         )
         lines.append("")
         for row in archived[:archived_preview]:

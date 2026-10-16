@@ -259,11 +259,25 @@ def _run_and_screen(args, env, mode: str) -> int:
     for name, reason in skipped:
         log(f"  · 跳过数据源 {name}：{reason}")
 
-    from_date, since_year = parse_since(getattr(args, "since", None))
+    since_raw = getattr(args, "since", None)
+    from_date, since_year = parse_since(since_raw)
+    min_date = None
+
+    def _as_date(value):
+        if value and len(value) == 10:
+            try:
+                return _dt.date.fromisoformat(value)
+            except ValueError:
+                return None
+        return None
+
+    min_date = _as_date(from_date)
+
     if mode == "watch":
         cutoff = _dt.date.today() - _dt.timedelta(days=int(args.days))
         from_date = cutoff.isoformat()
         since_year = cutoff.year
+        min_date = cutoff
         log(f"watch 模式：只看 {cutoff.isoformat()} 之后发表的论文（最近 {args.days} 天）")
 
     if getattr(args, "min_year", None) is not None:
@@ -284,6 +298,7 @@ def _run_and_screen(args, env, mode: str) -> int:
             from_date=from_date,
             mode=mode,
             min_year=since_year,
+            min_date=min_date,
             sort="date" if mode == "watch" else "relevance",
             log=log,
         )
@@ -582,7 +597,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = common(sub.add_parser("census", help="Tier A 全量普查（把领域一次读完）"))
     run_opts(p)
-    p.add_argument("--tier", choices=["all", "census", "search"], default="all")
+    p.add_argument(
+        "--tier", choices=["census", "all", "search"], default="census",
+        help="census=Tier A 核心（默认，可穷举、给你的是一份能读完的清单）；"
+             "search=Tier B 邻域；all=全部混在一起（会产生大量噪声，慎用）",
+    )
     p.add_argument("--no-generation", action="store_true", help="跳过术语漂移世代查询")
     p.add_argument("--no-category", action="store_true", help="跳过分类探针")
     p.set_defaults(func=cmd_census)

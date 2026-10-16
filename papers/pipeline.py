@@ -41,10 +41,15 @@ def run_queries(
     from_date: str | None = None,
     mode: str = "census",
     min_year: int | None = None,
+    min_date=None,
     sort: str = "relevance",
     log=None,
 ):
-    """执行一批查询，入库并建立运行记录。返回 run_id。"""
+    """执行一批查询，入库并建立运行记录。返回 run_id。
+
+    min_date 是精确日期下限（watch 模式用），min_year 是年份下限。
+    两者分开是因为 `--days 7` 必须按天过滤，不能退化成按年（实测踩过）。
+    """
     log = log or Log()
     run_id = store.start_run(mode, profile.name, [q["id"] for q in queries])
 
@@ -77,7 +82,9 @@ def run_queries(
             log(f"    · 取回 {len(fetched)} 篇")
 
             for paper in fetched:
-                passed, reason = passes_l0(paper, profile, min_year=min_year)
+                passed, reason = passes_l0(
+                    paper, profile, min_year=min_year, min_date=min_date
+                )
                 pid, is_new = store.upsert(paper)
                 if not passed:
                     l0_rejected += 1
