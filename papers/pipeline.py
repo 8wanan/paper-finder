@@ -15,6 +15,7 @@ import time
 from .net import HttpError, RateLimited
 from .normalize import clean_text
 from .screen import LLMScreener, bucket_of, passes_l0, score_l1
+from .store import SUBSTANTIVE_MODES
 
 __all__ = ["run_queries", "rescore", "import_census_file", "seed_sync", "Log"]
 
@@ -123,7 +124,12 @@ def rescore(store, profile, run_id=None, use_llm: bool = False, llm_top: int = 4
     传 run_id 则只重算该次运行的论文。
     """
     log = log or Log()
-    run = store.get_run(run_id) if run_id is not None else store.latest_run()
+    # 默认取最近一次"有实质内容"的运行（跳过 import / seed-sync 记账），
+    # 否则 L2 会把预算花在 seed-sync 那几篇论文上。
+    if run_id is not None:
+        run = store.get_run(run_id)
+    else:
+        run = store.latest_run(modes=SUBSTANTIVE_MODES)
     if run is None and not all_papers:
         raise LookupError("账本里还没有任何运行记录")
 

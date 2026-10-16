@@ -26,9 +26,12 @@ from .normalize import (
     short_id,
 )
 
-__all__ = ["Store", "SCHEMA_VERSION"]
+__all__ = ["Store", "SCHEMA_VERSION", "SUBSTANTIVE_MODES"]
 
 SCHEMA_VERSION = 1
+
+# 会产生"可读简报"的运行模式。`import` 与 `seed-sync` 只是记账，不算。
+SUBSTANTIVE_MODES = ("census", "search", "watch")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -380,7 +383,21 @@ class Store:
     def commit(self):
         self.conn.commit()
 
-    def latest_run(self):
+    def latest_run(self, modes=None):
+        """取最近一次运行。
+
+        modes 用来过滤"有实质内容的运行"。为什么需要：`import` 与 `seed-sync`
+        只是记账（把冷启动数据和种子论文塞进账本），它们产生的候选只有几篇。
+        如果 `brief` 默认取"最新一次运行"，用户导入完种子再敲 `brief`，
+        会看到一份 8 篇的简报，以为工具坏了。实测踩到过。
+        """
+        if modes:
+            placeholders = ",".join("?" * len(modes))
+            return self.conn.execute(
+                f"SELECT * FROM runs WHERE mode IN ({placeholders}) "
+                f"ORDER BY run_id DESC LIMIT 1",
+                tuple(modes),
+            ).fetchone()
         return self.conn.execute("SELECT * FROM runs ORDER BY run_id DESC LIMIT 1").fetchone()
 
     def get_run(self, run_id):

@@ -15,6 +15,7 @@ import json
 import os
 
 from .normalize import clean_text, short_id as short_id_for
+from .store import SUBSTANTIVE_MODES
 
 __all__ = ["render_brief", "short_id_for", "write_sidecar", "SIDECAR_SUFFIX"]
 
@@ -136,10 +137,30 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
 
     max_per_bucket：每个展开区块最多渲染多少行。search 模式一次可能带回上百篇
     候选，简报必须保持"5 分钟能读完"的长度，所以按分数截断并如实报告被截断的数量。
+
+    run_id 为空时取最近一次**有实质内容的**运行（跳过 import / seed-sync 记账）。
     """
-    run = store.get_run(run_id) if run_id is not None else store.latest_run()
+    if run_id is not None:
+        run = store.get_run(run_id)
+    else:
+        run = store.latest_run(modes=SUBSTANTIVE_MODES)
     if run is None:
-        return "# 简报\n\n账本里还没有任何运行记录。先跑 `papers.py census`。\n", {}, {}
+        existing = store.stats()["papers"]
+        lead = (
+            f"账本里已有 {existing} 篇论文，但还没跑过检索类运行。"
+            if existing
+            else "账本是空的。"
+        )
+        return (
+            "# 简报\n\n"
+            f"{lead}\n\n"
+            "跑其中一条即可生成简报：\n"
+            "- `papers.py census` 全量普查你的领域（推荐第一次用这个）\n"
+            "- `papers.py watch --days 7` 只看最近新增\n"
+            "- `papers.py search \"<关键词>\"` 临时查一个具体问题\n",
+            {},
+            {},
+        )
 
     rows = store.run_paper_rows(run["run_id"])
     if reviewer is None:

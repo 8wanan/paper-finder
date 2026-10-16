@@ -48,7 +48,7 @@ from .pipeline import (  # noqa: E402
 )
 from .render import render_brief, write_sidecar  # noqa: E402
 from .sources import build_sources  # noqa: E402
-from .store import Store  # noqa: E402
+from .store import SUBSTANTIVE_MODES, Store  # noqa: E402
 
 DEFAULT_GOLDEN = os.path.join("tests", "golden.yaml")
 GOLDEN_FALLBACK = os.path.join("tests", "golden.example.yaml")
@@ -343,9 +343,23 @@ def cmd_rescore(args, env) -> int:
 def cmd_brief(args, env) -> int:
     profile = load_profile(args.profile, ROOT)
     with Store(resolve_db(env)) as store:
-        run = store.get_run(args.run) if args.run else store.latest_run()
+        run = store.get_run(args.run) if args.run else store.latest_run(modes=SUBSTANTIVE_MODES)
         if run is None:
-            raise SystemExit("账本里还没有任何运行记录，先跑 `papers.py census`")
+            existing = store.stats()["papers"]
+            if existing:
+                lead = (
+                    f"账本里已有 {existing} 篇论文，但还没跑过检索类运行"
+                    f"（import / seed-sync 只是记账，不产生简报）。\n"
+                    f"跑一条即可：\n"
+                )
+            else:
+                lead = "账本是空的。先跑其中一条：\n"
+            raise SystemExit(
+                lead
+                + "  papers.py census          全量普查你的领域（推荐第一次用这个）\n"
+                + "  papers.py watch --days 7  只看最近新增\n"
+                + "  papers.py search \"<关键词>\"  临时查一个具体问题"
+            )
         has_llm = bool(
             store.conn.execute(
                 "SELECT 1 FROM run_papers WHERE run_id=? AND l2 IS NOT NULL LIMIT 1",

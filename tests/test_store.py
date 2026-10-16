@@ -183,6 +183,28 @@ class TestQueries(StoreCase):
         self.assertEqual(len(decisions), 1)
         self.assertEqual(decisions[pid]["decision"], "keep")
 
+    def test_latest_run_skips_bookkeeping_modes(self):
+        """回归：brief 默认取最新运行，而 seed-sync 这类记账运行只有几篇论文，
+        会让第一次使用的用户看到一份几乎空的简报，以为工具坏了。"""
+        from papers.store import SUBSTANTIVE_MODES
+
+        self.store.start_run("import", "test", [])
+        self.store.start_run("census", "test", ["A1"])
+        self.store.start_run("seed-sync", "test", [])
+        self.store.commit()
+
+        self.assertEqual(self.store.latest_run()["mode"], "seed-sync")
+        self.assertEqual(
+            self.store.latest_run(modes=SUBSTANTIVE_MODES)["mode"], "census"
+        )
+
+    def test_latest_run_returns_none_when_only_bookkeeping(self):
+        from papers.store import SUBSTANTIVE_MODES
+
+        self.store.start_run("import", "test", [])
+        self.store.commit()
+        self.assertIsNone(self.store.latest_run(modes=SUBSTANTIVE_MODES))
+
     def test_stats_shape(self):
         self.store.upsert(paper(arxiv_id="2501.00016"))
         stats = self.store.stats()
