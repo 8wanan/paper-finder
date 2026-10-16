@@ -1,0 +1,21 @@
+# 统一换行符：仓库内一律 LF，避免 Windows 上 Git 反复提示
+# "LF will be replaced by CRLF"，也避免跨平台协作时整文件 diff。
+* text=auto eol=lf
+
+# Windows 脚本保持 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制：不要做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.db binary
+*.sqlite3 binary
+*.zip binary
+
+# 让 GitHub 语言统计不要把这些算进去
+data/seed-census.json linguist-vendored

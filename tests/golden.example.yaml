@@ -1,0 +1,97 @@
+# 金标集模板 —— 复制为 tests/golden.yaml 并补全
+#
+# 作用：这是整个项目**唯一**能证明「筛选变好了还是变坏了」的东西。
+#      没有它，references/scoring.md 里的权重调参全是盲调。
+#
+# 填法（约 30 分钟）：
+#   1. positives：从你**已经读过**的 LLM 语音安全论文里挑 25 篇。
+#      必须包含 Tier A 全部核心论文（越狱、音频提示注入、Whisper 攻击、语音助手安全）。
+#      arxiv_id 可留空，但 title 必须尽量准确（去重会做归一化匹配）。
+#   2. negatives：挑 25 篇**明确不相关**的。不要挑"有点相关但不重要"的——
+#      负样本必须是你一眼就能否掉的，否则指标没有意义。
+#      好的负样本来源：纯语音合成、音乐生成、语音增强、情感识别、医学语音。
+#   3. 每篇标注 why，让你半年后还能看懂自己当初为什么选它。
+#
+# 指标目标（见 DESIGN.md §8）：
+#   Recall@50    ≥ 0.92   （25 篇正样本有多少进入 L1 前 50）
+#   Precision@10 ≥ 0.70   （简报前 10 篇里真相关的比例）
+
+version: 0.1
+profile: llm-speech-security
+updated: 2026-10-16
+
+# ── 正样本：已读过的必读论文（25 篇，前 9 篇已核实 arXiv ID）──────────
+positives:
+  - title: "Audio Adversarial Examples: Targeted Attacks on Speech-to-Text"
+    arxiv_id: "1801.01944"
+    year: 2018
+    tier: B
+    why: ASR 对抗样本的奠基工作，必引
+  - title: "DolphinAttack: Inaudible Voice Commands"
+    arxiv_id: "1708.09537"
+    year: 2017
+    tier: B
+    why: 超声波注入开创性工作（注意 arXiv 标题拼作 DolphinAtack）
+  - title: "CommanderSong: A Systematic Approach for Practical Adversarial Voice Recognition"
+    arxiv_id: "1801.08535"
+    year: 2018
+    tier: B
+    why: 歌曲载体攻击，语音助手脉络关键节点
+  - title: "Careless Whisper: Speech-to-Text Hallucination Harms"
+    arxiv_id: "2402.08021"
+    year: 2024
+    tier: A
+    why: 转写幻觉的安全危害，非越狱但属核心
+  - title: "Voice Jailbreak Attacks Against GPT-4o"
+    arxiv_id: "2405.19103"
+    year: 2024
+    tier: A
+    why: 语音 LLM 越狱最直接的对标工作
+  - title: "Muting Whisper: A Universal Acoustic Adversarial Attack on Speech Foundation Models"
+    arxiv_id: "2405.06134"
+    year: 2024
+    tier: A
+    why: 通用声学对抗，跨模型迁移
+  - title: "StyleBreak: Revealing Alignment Vulnerabilities in Large Audio-Language Models via Style-Aware Audio Jailbreak"
+    arxiv_id: "2511.10692"
+    year: 2025
+    tier: A
+    why: 把说话风格作为对齐绕过通道，与我的课题直接相关
+    # 注意：这里必须写**完整标题**。早期版本写成截断的
+    # "…in Large Audio-Language Models"，结果被判定为"未入库"——
+    # 因为归一化标题少了 4 个 token，Jaccard 只有 0.71。
+    # is_same_paper 已加入"截断容错"，但仍建议金标集写全标题。
+  - title: "Hidden Voice Commands"
+    year: 2016
+    tier: B
+    why: USENIX Sec'16，语音助手攻击源头
+  - title: "ASVspoof 2019 / SASV 2022 Challenge"
+    year: 2022
+    tier: B
+    why: 说话人验证反欺骗的基线数据集与评测标准
+
+  # TODO: 再补 16 篇 → 共 25 篇
+  # - title: ""
+  #   arxiv_id: ""
+  #   year:
+  #   tier: A | B
+  #   why: ""
+
+# ── 负样本：明确不相关的（25 篇）────────────────────────────────
+negatives:
+  - title: "TODO 从你的 Zotero / 浏览记录里挑纯语音合成、音乐生成、语音增强的论文"
+    why: "示例：模型再好也与安全无关"
+  # - title: ""
+  #   why: ""
+
+# ── 必读核心：这 8 项必须全部被召回，否则视为召回失败 ─────────────
+# 比总体 Recall@50 更严格的一道闸门：漏掉其中任何一篇都说明查询表有洞。
+must_recall:
+  - "Voice Jailbreak Attacks Against GPT-4o"
+  - "StyleBreak: Revealing Alignment Vulnerabilities in Large Audio-Language Models via Style-Aware Audio Jailbreak"
+  - "Muting Whisper: A Universal Acoustic Adversarial Attack on Speech Foundation Models"
+  - "Careless Whisper: Speech-to-Text Hallucination Harms"
+  - "Audio Adversarial Examples: Targeted Attacks on Speech-to-Text"
+  - "DolphinAttack: Inaudible Voice Commands"
+  - "CommanderSong: A Systematic Approach for Practical Adversarial Voice Recognition"
+  - "Hidden Voice Commands"

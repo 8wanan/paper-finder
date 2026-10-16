@@ -1,0 +1,29 @@
+# paper-finder 依赖
+#
+# ── 运行时：零第三方依赖 ──────────────────────────────
+# 本项目只用 Python 标准库（3.10+）。这不是洁癖，是三个实际理由：
+#   1. 安全：没有 pip install，就没有安装脚本执行任意代码的风险（SECURITY.md §3）。
+#   2. 可移植：没有版本漂移，换了机器/几年后大概率还能跑。
+#   3. 环境受限也能用：实测环境常常没有 PyYAML，且沙箱不允许往解释器目录装包，
+#      所以 YAML 用的是自带的受控子集解析器（papers/yamlish.py）。
+#
+# 用到的标准库：sqlite3  json  urllib  xml.etree  hashlib  re  datetime
+#              argparse  unittest  tempfile  shutil  os  sys
+#
+# 不要为了"方便"引入 requests / pandas / langchain：
+#   - requests → urllib 已封装好重试与退避（papers/net.py）
+#   - pandas   → 1–2 千条数据用 sqlite3 足够
+#   - langchain/llama-index → 抽象过重，且它们会带来大量传递依赖
+
+# ── 测试：同样零依赖 ─────────────────────────────────
+# 测试用标准库 unittest，且**必须离线可跑**。
+#   python -m unittest discover -s tests -t .
+#
+# pytest 不是必需的。如果你更喜欢 pytest，它可以直接运行 unittest 风格的测试：
+# pytest>=8.0.0
+#
+# 也不要引入 responses / vcrpy 去 mock HTTP：本项目的测试直接在
+# LLMScreener._call 这一层替换实现（见 tests/test_llm.py），比录播更简单可靠。
+
+# ── 可选（仅在需要导出 Excel 综述表时）────────────────
+# openpyxl>=3.1.0

@@ -1,0 +1,43 @@
+# ── 凭证：绝不提交 ──────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+credentials.json
+
+# ── 本地账本：体积大且含个人判定，不提交 ──────────
+data/*.db
+data/*.db-journal
+data/*.sqlite3
+python-version
+
+# ── 但冷启动普查数据要提交（可复现的种子）─────────
+!data/seed-census.json
+
+# ── 全文 PDF：版权风险，绝不提交 ────────────────
+pdfs/
+*.pdf
+
+# ── 运行产物 ──────────────────────────────────
+briefs/
+*.brief.md
+runs/
+
+# ── 测试临时目录（必须放仓库内：沙箱常禁止在系统 Temp 建 SQLite 文件）──
+tests/.tmp/
+
+# ── Python ───────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# ── 编辑器 / 系统 ─────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

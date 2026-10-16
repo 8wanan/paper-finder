@@ -1,0 +1,288 @@
+# paper-finder 领域配置 · LLM 语音识别安全
+# 换研究方向时复制本文件修改，不要改代码。
+# 所有 expect 数字为 2026-10-16 实测，用于回归监控：若实际命中数低于 expect 的 50%，
+# 说明查询失效或数据源异常，doctor 应报警。
+
+name: llm-speech-security
+display_name: LLM 语音识别安全
+version: 0.1
+updated: 2026-10-16
+
+# ── 研究兴趣：直接喂给 L2 精排 LLM 的 rubric「相关度」维度 ──────────────
+interest: |
+  关注基于大语言模型的语音识别与音频理解系统（speech LLM / large audio-language
+  model / ASR 系统，如 Whisper、GPT-4o audio）的安全与隐私问题。具体包括：
+  音频模态的越狱与对齐绕过、语音提示注入与上下文劫持、声学对抗样本对转写的
+  定向操纵、语音助手与智能音箱的攻防、说话人验证欺骗、以及上述攻击的防御与检测。
+  不关注：纯语音合成质量、音乐生成、语音增强、情感识别、医学语音病理等与安全无关的任务。
+
+# ── Tier A：全量穷举（量小，必须一条不漏）──────────────────────────
+census:
+  depth: 300          # 每个查询最多取多少条
+  queries:
+    - id: A1
+      q: 'all:"audio jailbreak" OR all:"voice jailbreak" OR all:"spoken jailbreak"'
+      expect: 18
+    - id: A2
+      q: 'all:"prompt injection" AND (all:"audio" OR all:"speech" OR all:"voice")'
+      expect: 17
+    - id: A3
+      q: 'all:"Whisper" AND (all:"attack" OR all:"adversarial" OR all:"jailbreak")'
+      expect: 50
+    - id: A4
+      q: 'abs:"voice assistant" AND (abs:"security" OR abs:"privacy" OR abs:"attack")'
+      expect: 96
+    - id: A5
+      q: 'all:"speech" AND all:"large language model" AND (all:"jailbreak" OR all:"attack" OR all:"safety" OR all:"adversarial")'
+      expect: 156
+    - id: A6
+      q: 'all:"audio-language model" OR all:"large audio-language model" OR all:"speech language model"'
+      expect: 200
+
+# ── Tier B：搜索排序（不可穷举，只出 Top-N）──────────────────────────
+search:
+  default_top: 20
+  queries:
+    - id: B1
+      q: 'abs:"adversarial" AND (abs:"speech recognition" OR abs:"automatic speech recognition" OR abs:"ASR")'
+      expect: 273
+    - id: B2
+      q: 'abs:"speaker verification" AND (abs:"spoofing" OR abs:"adversarial" OR abs:"attack")'
+      expect: 200
+    - id: B3
+      q: 'abs:"deepfake" AND (abs:"audio" OR abs:"speech")'
+      expect: 449
+  # 世代化查询：覆盖术语漂移的三个世代（见 references/queries.md §2）
+  generation_probes:
+    - id: G1
+      q: 'abs:"adversarial" AND abs:"speech recognition" AND (abs:"over-the-air" OR abs:"imperceptible" OR abs:"psychoacoustic")'
+    - id: G2
+      q: 'all:"Whisper" AND (all:"jailbreak" OR all:"transcription" OR all:"hallucination")'
+    - id: G3
+      q: '(all:"audio" OR all:"speech" OR all:"voice") AND (all:"jailbreak" OR all:"prompt injection") AND (all:"large language model" OR all:"LALM" OR all:"multimodal")'
+
+# ── 分类探针：仅补充召回，不得作为召回门槛（实测召回不足：131 vs 273）──
+category_probes:
+  queries:
+    - id: C1
+      q: 'cat:eess.AS AND cat:cs.CR'
+      expect: 200
+    - id: C2
+      q: 'cat:cs.SD AND cat:cs.CR'
+      expect: 192
+  note: |
+    C1 在 2024+ 仅 131 篇，而纯关键词 B1 有 273 篇。分类交集召回明显不足，
+    因为大量音频安全论文只挂 cs.CR+cs.LG 或只挂 eess.AS。仅作打分特征。
+
+# ── 打分特征 ────────────────────────────────────────────────────
+scoring:
+  # ── 术语拆成两条轴：威胁轴 × 主题轴 ──────────────────────────────
+  # 为什么拆（实测踩坑）：最初把主题词和威胁词放在同一张权重表里，结果
+  # "Continuous Audio Thinking for Large Audio-Language Models" 这类
+  # 只谈模型、不谈安全的论文，因标题命中 large audio-language model（高权重）
+  # 就把 S_lex 打满，混进"强烈建议读"桶。拆轴后 S_lex = S_threat × (0.5+0.5×S_topic)：
+  #   两轴都中 -> 1.00 ；只中威胁词 -> 0.50 ；只中主题词 -> 0.00
+  threat_terms:
+    high:
+      - audio jailbreak
+      - voice jailbreak
+      - spoken jailbreak
+      - prompt injection
+      - jailbreak
+      - adversarial
+      - spoofing
+      - backdoor
+      - poisoning
+      - over-the-air
+      - membership inference
+      - voice cloning
+      - impersonation
+      - deepfake
+      - model extraction
+      - data extraction
+    mid:
+      - attack
+      - vulnerability
+      - perturbation
+      - adversarial example
+      - red teaming
+      - guardrail
+      - alignment
+      - defense
+      - detection
+      - security
+      - privacy
+      - threat
+      - evasion
+      - hijack
+      - manipulation
+      - misuse
+      - injection
+      - anti-spoofing
+      - watermark
+      # 实测补入：Careless Whisper（转写幻觉危害）标题里只有
+      # Hallucination / Harms，威胁轴得 0 分排到 701 名。补这类"非攻击型危害"词。
+      - hallucination
+      - misinformation
+      - harm
+      - toxicity
+    low:
+      - robustness
+      - safety
+      - harmful
+      - malicious
+      - risk
+      - leakage
+      - provenance
+      - authentication
+      - trustworthy
+      - unsafe
+  topic_terms:
+    high:
+      - large audio-language model
+      - audio-language model
+      - speech language model
+      - lalm
+      - voice assistant
+      - smart speaker
+      - speech recognition
+      - automatic speech recognition
+      - asr
+      - text-to-speech
+      - tts
+      - speaker verification
+      - speech synthesis
+      - audio llm
+    mid:
+      - speech
+      - audio
+      - voice
+      - acoustic
+      - spoken
+      - whisper
+      - transcription
+      - utterance
+      - waveform
+      - multimodal large language model
+      - speech-to-text
+    low:
+      - language model
+      - llm
+      - foundation model
+      - transformer
+      - neural network
+
+  category_weights:
+    eess.AS: 0.40
+    cs.CR: 0.35
+    cs.SD: 0.30
+    cs.CL: 0.20
+    cs.LG: 0.15
+    cs.MM: 0.15
+  recency_tau_days: 540
+  venue_whitelist:
+    - "IEEE S&P"
+    - "ACM CCS"
+    - "USENIX Security"
+    - "NDSS"
+    - "EuroS&P"
+    - NeurIPS
+    - ICML
+    - ICLR
+    - AAAI
+    - ACL
+    - EMNLP
+    - NAACL
+    - TACL
+    - Interspeech
+    - ICASSP
+    - ASRU
+    - SLT
+    - TASLP
+    - "Speech Communication"
+  venue_scores:
+    whitelist: 1.0
+    preprint: 0.4      # 刻意不给 0：本领域前沿几乎首发 arXiv
+    other: 0.2
+
+# ── L0 负向词：必须写成「负向词 AND NOT 安全词」的合取 ────────────────
+negative:
+  terms:
+    - music generation
+    - text-to-speech synthesis
+    - speech enhancement
+    - emotion recognition
+    - speaker diarization
+    - keyword spotting
+    - code-switching
+    - hearing aid
+    - clinical
+    - pathology
+  safety_overrides:      # 出现任一即豁免负向规则
+    - attack
+    - adversarial
+    - jailbreak
+    - security
+    - privacy
+    - spoofing
+    - defense
+    - vulnerability
+
+# ── 阈值 ───────────────────────────────────────────────────────
+thresholds:
+  # L1-only 模式（未配置 LLM key）的分桶阈值。
+  # 标定依据：实测 347 篇 census 候选，中位 L1=0.495，>=0.65 约 15%、>=0.45 约 59%。
+  # 注意 L1 实际上限约 0.84（S_hit 要 3 条独立查询命中才满），不能按满分 1.0 设阈值。
+  l1_strong: 0.65
+  l1_maybe: 0.45
+  l1_min_keep: 0.30
+  # L2 模式（有 LLM 精排）的分桶阈值，满分 12
+  l2_strong: 8
+  l2_maybe: 5
+  needs_review_l1_min: 0.50
+  # 种子论文分数下限：用户明确声明这些"必读"，工具必须保证它们浮上来。
+  # 实测依据：DolphinAttack 标题被拼错、又是 2017 老论文，自然得分仅 0.40、
+  # 排 117 名，落在 must_recall 的 top-50 之外。
+  seed_score_floor: 0.65
+  # 若归档桶占比 < 0.60，说明 L1 过松，需调高 l1_maybe
+  archived_ratio_target: 0.60
+
+# ── 种子论文：引文滚雪球起点（Phase 2 使用，建议人工确认后补充）─────────
+# 全部 arxiv_id 已于 2026-10-16 逐条核实；未标 arxiv_id 的表示非 arXiv 论文或尚未核实。
+# ⚠️ 踩坑记录：DolphinAttack 在 arXiv 上的标题被拼错为 "DolphinAtack"（少一个 t），
+#    按正确拼写做标题检索会 NOT FOUND。这正说明去重与检索都**不能依赖精确标题匹配**，
+#    必须走 ID 指纹 + 归一化标题的模糊匹配。
+seeds:
+  # 种子论文豁免时间衰减：它们是被反复引用的基线，旧也必须召回
+  frozen_recency: true
+  items:
+    - title: "DolphinAttack: Inaudible Voice Commands"
+      year: 2017
+      arxiv_id: "1708.09537"          # 已核实（arXiv 标题拼作 DolphinAtack）
+    - title: "Hidden Voice Commands"
+      year: 2016
+      verified: usenix-security-2016  # 非 arXiv，USENIX Security 2016
+    - title: "CommanderSong: A Systematic Approach for Practical Adversarial Voice Recognition"
+      year: 2018
+      arxiv_id: "1801.08535"          # 已核实
+    - title: "Audio Adversarial Examples: Targeted Attacks on Speech-to-Text"
+      year: 2018
+      arxiv_id: "1801.01944"          # 已核实（Carlini & Wagner）
+    - title: "Careless Whisper: Speech-to-Text Hallucination Harms"
+      year: 2024
+      arxiv_id: "2402.08021"          # 已核实。注意：主题是转写幻觉危害，不是越狱
+    - title: "Voice Jailbreak Attacks Against GPT-4o"
+      year: 2024
+      arxiv_id: "2405.19103"          # 已核实
+    - title: "Muting Whisper: A Universal Acoustic Adversarial Attack on Speech Foundation Models"
+      year: 2024
+      arxiv_id: "2405.06134"          # 已核实
+    - title: "StyleBreak: Revealing Alignment Vulnerabilities in Large Audio-Language Models via Style-Aware Audio Jailbreak"
+      year: 2025
+      arxiv_id: "2511.10692"          # 已核实（2025-11）
+    - title: "Hijacking Large Audio-Language Models via Context-Agnostic and Imperceptible Auditory Prompt Injection"
+      year: 2026
+      arxiv_id: "2604.14604"          # 已核实
+    - title: "ASVspoof / SASV Challenge 系列"
+      year: 2022
+      verified: challenge-series      # 非单篇，作为一组基线引用
