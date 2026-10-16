@@ -164,8 +164,16 @@ L2 精排会把**网上抓来的论文摘要原文**拼进 prompt 送给 LLM：
       不只是当前文件。**当前文件干净不代表历史干净。**
 - [ ] `git status --ignored` 确认 `.env` / `*.db` / `briefs/` 确实被忽略，而不是"碰巧没加"。
 - [ ] 确认 `data/seed-census.json` 可以公开（它只是 arXiv 的标题+ID，是公开信息，OK）。
-- [ ] 确认 `tests/golden.yaml`（你真实的那份，不是 `.example`）不会泄露你的研究判断。
-      **建议：真实金标集单独存放，不进仓库**，只提交脱敏的 `.example`。
+- [ ] 确认 **`tests/golden.yaml` 没有被提交**。它是你亲手标注的"哪些论文必读"加上
+      你的 `why` 备注，属于你的研究判断，不是工具的一部分。
+      **已在 `.gitignore` 中排除**（`tests/golden.yaml` 与 `tests/golden-*.yaml`），
+      只提交脱敏模板 `tests/golden.example.yaml`。可用这条命令复核：
+      ```powershell
+      git check-ignore -v tests/golden.yaml   # 应输出匹配到的规则
+      git ls-files tests/ | Select-String golden   # 应只看到 golden.example.yaml
+      ```
+      > 历史教训：v0.1 的 `.gitignore` 漏了这条规则，`git add -A` 会把
+      > 真实金标集一起提交。写进 checklist 的规则必须真的实现，否则只是安慰。
 - [ ] 检查 `.env.example` 里没有真实值。
 - [ ] 如果曾经提交过 key：**先在服务商撤销 key**，再用 `git filter-repo` 重写历史，
       最后强推。只删文件不重写历史是无效的。

@@ -23,6 +23,16 @@ briefs/
 *.brief.md
 runs/
 
+# ── 真实金标集：含你的研究判断，绝不提交 ────────────
+# 金标集记录了你认为"哪些是必读"以及你的 why 备注 —— 那是你的研究品味，
+# 不是工具的一部分。别人也用不上（每个人的判断不同，无法共享）。
+# 只提交脱敏的模板 tests/golden.example.yaml。
+# 注意：早期版本的 .gitignore 漏了这两行，实测会导致 `git add -A`
+# 把 golden.yaml 一起提交上去。
+tests/golden.yaml
+tests/golden-*.yaml
+!tests/golden.example.yaml
+
 # ── 测试临时目录（必须放仓库内：沙箱常禁止在系统 Temp 建 SQLite 文件）──
 tests/.tmp/
 
