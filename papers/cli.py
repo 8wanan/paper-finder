@@ -160,7 +160,18 @@ def cmd_doctor(args, env) -> int:
     check("llm key", bool((env.get("LLM_API_KEY") or "").strip()),
           mask_secret(env.get("LLM_API_KEY")))
 
-    client = make_client(env, Log(False))
+    # 用真实 log（不是静默的），这样 CA 自动修正这类重要信息用户能看到
+    client = make_client(env, log)
+    if client.ca_bundle:
+        check(
+            "ssl-ca",
+            True,
+            f"当前 Python 缺少默认 CA 证书，已自动改用 {client.ca_bundle}"
+            f"（建议设 SSL_CERT_FILE 永久生效）",
+        )
+    else:
+        check("ssl-ca", True, "默认 CA 证书可用")
+
     sources, skipped = build_sources(
         env, client, names=args.sources.split(",") if args.sources else None
     )
