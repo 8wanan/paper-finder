@@ -48,6 +48,41 @@ def build_id_map(rows) -> dict:
     return mapping
 
 
+def ranked_rows_for_run(store, run_id, profile):
+    """返回 (rows, rank_of)。
+
+    排序与编号规则集中在这里，供 render_brief 与 `papers.py dump` 共用 ——
+    两处若各写一份，"导出的顺序"和"简报的顺序"迟早会不一致。
+
+    排序键：**有核心安全信号的排前面**，然后按分数。
+    为什么：强推桶只收有核心安全信号的论文（见 screen.bucket_of）。如果不先按
+    这个排，前 15 名会被 LALM 通用论文占满，真正该推的反而落到 15 名以外。
+    实测 watch 运行的前 15 名里曾有 11 篇没有明确安全信号。
+    """
+    from .screen import is_review_row
+
+    def sort_key(row):
+        detail = row["l1_detail"]
+        core = False
+        if detail:
+            try:
+                core = bool((json.loads(detail) or {}).get("has_core_signal"))
+            except (json.JSONDecodeError, TypeError):
+                core = False
+        return (
+            -int(core),                                                   # 核心信号优先
+            -(row["l2"] if row["l2"] is not None else -1),                # 再按 L2
+            -(row["l1"] if row["l1"] is not None else -1),                # 再按 L1
+            -(row["year"] or 0),
+        )
+
+    rows = list(store.run_paper_rows(run_id))
+    rows.sort(key=sort_key)
+    rankable = [r for r in rows if not is_review_row(r, profile)]
+    rank_of = {row["pid"]: index + 1 for index, row in enumerate(rankable)}
+    return rows, rank_of
+
+
 def _dedupe(values):
     """按出现顺序去重，避免简报里出现 "adversarial、adversarial、jailbreak"。"""
     seen, out = set(), []
@@ -81,7 +116,7 @@ def _escape_cell(text: str) -> str:
     return clean_text(text).replace("|", "\\|")
 
 
-def _row_markdown(row, short_id: str, has_llm: bool, is_new: bool) -> str:
+def _row_markdown(row, short_id: str, has_llm: bool, is_new: bool, annotation=None) -> str:
     title = _escape_cell(row["title"]) or "(无标题)"
     url = row["url"] or row["oa_url"] or ""
     title_cell = f"[{title}]({url})" if url else title
@@ -122,12 +157,26 @@ def _row_markdown(row, short_id: str, has_llm: bool, is_new: bool) -> str:
         basis = _escape_cell(flag) + (f"；{basis}" if basis else "")
 
     new_cell = "✦" if is_new else ""
+
+    # 有简介时用它替换掉"关键词命中"那一栏 —— 后者只说明"为什么匹配上"，
+    # 不说明"这篇在讲什么"，而后者才是用户决定读不读的依据。
+    if annotation is not None:
+        summary = _escape_cell(annotation["summary"])
+        why = _escape_cell(annotation["why_relevant"] or "")
+        cell = f"{summary}　→　{why}" if why else summary
+        return f"| `{short_id}` | {new_cell} | {title_cell} | {cell} | {year} | [ ] |"
+
     return f"| `{short_id}` | {new_cell} | {title_cell} | {year} | {l1_cell} | {basis} | [ ] |"
 
 
-_HEADER = (
-    "| id | 新 | 标题 | 年 | 分数 | 为什么相关 | 决策 |\n"
-    "|----|----|------|----|------|-----------|------|"
+# 两种表头：有简介时用窄表（简介取代"分数+依据"，那两栏在有简介后是噪声）
+_HEADER_PLAIN = (
+    "| id | 新 | 标题 | 年 | 分数 | 依据 | 决策 |\n"
+    "|----|----|------|----|------|------|------|"
+)
+_HEADER_SUMMARY = (
+    "| id | 新 | 标题 | 简介 | 年 | 决策 |\n"
+    "|----|----|------|------|----|------|"
 )
 
 
@@ -162,28 +211,19 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
             {},
         )
 
-    rows = list(store.run_paper_rows(run["run_id"]))
-    from .screen import bucket_of, is_review_row
+    rows, rank_of = ranked_rows_for_run(store, run["run_id"], profile)
+    from .screen import bucket_of
 
     if reviewer is None:
         reviewer = lambda row, rank: bucket_of(row, profile, has_llm, rank=rank)  # noqa: E731
 
-    # 先按分数排序并编号：L1-only 模式按名次分桶（绝对阈值切不出层次，见
-    # config.DEFAULT_THRESHOLDS 的注释）。编号时排除"需人工确认"的论文，
-    # 否则它们会占掉真正候选的展示名额。
-    rows.sort(
-        key=lambda r: (
-            -(r["l2"] if r["l2"] is not None else -1),
-            -(r["l1"] if r["l1"] is not None else -1),
-            -(r["year"] or 0),
-        )
-    )
-    rankable = [r for r in rows if not is_review_row(r, profile)]
-    rank_of = {row["pid"]: index + 1 for index, row in enumerate(rankable)}
-
     buckets = {"strong": [], "maybe": [], "review": [], "archived": []}
     for row in rows:
         buckets[reviewer(row, rank_of.get(row["pid"]))].append(row)
+
+    # 简介：有则用它替代"关键词命中"那一栏
+    annotations = store.annotations()
+    show_summary = any(row["pid"] in annotations for row in rows)
 
     for key in buckets:
         buckets[key].sort(
@@ -213,10 +253,16 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
     lines.append("")
     if has_llm:
         lines.append("筛选模式：**L1 粗筛 + L2 语义精排**")
+    elif show_summary:
+        lines.append(
+            "筛选模式：**L1 关键词粗筛**（未配置 LLM）。"
+            "「简介」一栏由 agent 阅读摘要后写出，不是关键词匹配结果。"
+        )
     else:
         lines.append(
             "筛选模式：**L1-only 粗筛**（未配置 LLM key，未做语义精排）。"
-            "「为什么相关」一栏显示的是关键词命中事实，不是语义判断。"
+            "「依据」一栏显示的是关键词命中事实，不是语义判断 —— "
+            "跑 `papers.py dump` 后由 agent 写简介，简报会多出「简介」一栏。"
         )
     lines.append("")
     lines.append(
@@ -235,10 +281,13 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
             lines.append("")
             continue
         shown = items if not max_per_bucket else items[:max_per_bucket]
-        lines.append(_HEADER)
+        lines.append(_HEADER_SUMMARY if show_summary else _HEADER_PLAIN)
         for row in shown:
             lines.append(
-                _row_markdown(row, reverse[row["pid"]], has_llm, bool(row["is_new"]))
+                _row_markdown(
+                    row, reverse[row["pid"]], has_llm, bool(row["is_new"]),
+                    annotation=(annotations.get(row["pid"]) if show_summary else None),
+                )
             )
         if len(items) > len(shown):
             lines.append("")
@@ -281,6 +330,7 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
         "ledger_total": n_total,
         "buckets": {k: len(v) for k, v in buckets.items()},
         "mode": "l1+l2" if has_llm else "l1-only",
+        "summaries": sum(1 for row in rows if row["pid"] in annotations),
     }
     return "\n".join(lines), id_map, stats
 

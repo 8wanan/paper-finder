@@ -36,8 +36,12 @@ census:
       q: 'all:"speech" AND all:"large language model" AND (all:"jailbreak" OR all:"attack" OR all:"safety" OR all:"adversarial")'
       expect: 156
     - id: A6
-      q: 'all:"audio-language model" OR all:"large audio-language model" OR all:"speech language model"'
-      expect: 200
+      # 这条原本是纯主题查询（只有 audio-language model，没有任何安全词），
+      # 结果把整个 LALM 领域的论文都倒了进来 —— 实测 watch 运行的前 15 名里
+      # 有 8 篇来自这一条，内容却是水下声学识别、音乐评审、声乐教练。
+      # Tier A 的定义是"可穷举的核心安全文献"，不含安全约束的查询不配进这一档。
+      q: '(all:"audio-language model" OR all:"large audio-language model" OR all:"speech language model" OR all:"audio LLM") AND (all:"attack" OR all:"jailbreak" OR all:"adversarial" OR all:"security" OR all:"safety" OR all:"injection" OR all:"vulnerability" OR all:"defense" OR all:"spoofing" OR all:"privacy")'
+      expect: 100
 
 # ── Tier B：搜索排序（不可穷举，只出 Top-N）──────────────────────────
 search:
@@ -103,13 +107,10 @@ scoring:
     mid:
       - attack
       - vulnerability
-      - perturbation
       - adversarial example
       - red teaming
       - guardrail
-      - alignment
       - defense
-      - detection
       - security
       - privacy
       - threat
@@ -120,13 +121,18 @@ scoring:
       - injection
       - anti-spoofing
       - watermark
-      # 实测补入：Careless Whisper（转写幻觉危害）标题里只有
-      # Hallucination / Harms，威胁轴得 0 分排到 701 名。补这类"非攻击型危害"词。
-      - hallucination
       - misinformation
       - harm
       - toxicity
     low:
+      # 这几个原先是 mid，实测发现它们是**任何音频 ML 论文的常规词汇**，
+      # 不是安全信号：一篇讲 LALM 幻觉评测的论文靠 hallucination + detection
+      # 就能把威胁轴打满，混进"强烈建议读"。降到 low 后它们只是辅助信号，
+      # 且**不足以让论文进强推桶**（见下面的 core_terms）。
+      - perturbation
+      - alignment
+      - detection
+      - hallucination
       - robustness
       - safety
       - harmful
@@ -137,6 +143,43 @@ scoring:
       - authentication
       - trustworthy
       - unsafe
+
+  # ── 核心安全信号（进强推桶的必要条件）──────────────────────────────
+  # 为什么需要它：威胁轴得分只能说明"出现了一些安全相关词汇"，而
+  # perturbation / detection / alignment / hallucination 这类词在任何音频 ML
+  # 论文里都会出现。实测 watch 运行的前 15 名里有 11 篇连一个明确的安全信号
+  # 都没有（水下声学识别、音乐评审、声乐教练、声码器探针）。
+  # 所以强推桶加一道硬门槛：必须命中本表里的词，才可能被强推。
+  # 不命中的论文不会被丢弃，只是最多进"值得扫一眼"。
+  core_terms:
+    - audio jailbreak
+    - voice jailbreak
+    - spoken jailbreak
+    - jailbreak
+    - prompt injection
+    - adversarial
+    - spoofing
+    - anti-spoofing
+    - backdoor
+    - poisoning
+    - over-the-air
+    - membership inference
+    - voice cloning
+    - impersonation
+    - deepfake
+    - model extraction
+    - data extraction
+    - attack
+    - vulnerability
+    - threat
+    - evasion
+    - hijack
+    - manipulation
+    - misuse
+    - injection
+    - red teaming
+    - unauthorized
+    - privacy leakage
   topic_terms:
     high:
       - large audio-language model

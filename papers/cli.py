@@ -46,7 +46,7 @@ from .pipeline import (  # noqa: E402
     run_queries,
     seed_sync,
 )
-from .render import render_brief, write_sidecar  # noqa: E402
+from .render import render_brief, short_id_for, write_sidecar  # noqa: E402
 from .sources import build_sources  # noqa: E402
 from .store import SUBSTANTIVE_MODES, Store  # noqa: E402
 
@@ -218,6 +218,156 @@ def cmd_seed_sync(args, env) -> int:
          f"种子同步完成：新增 {result['new']} 篇"
          + (f"；{len(result['without_id'])} 篇无 arXiv ID 需另行检索"
             if result["without_id"] else ""))
+
+
+def cmd_dump(args, env) -> int:
+    """导出候选论文（含摘要），供 agent 写简介或人工检查。
+
+    这是「让 agent 当 LLM」工作流的第一步：dump → agent 读摘要写简介 →
+    annotate 写回 → brief 显示「简介」栏。全程不需要 API key。
+    """
+    from .render import ranked_rows_for_run
+
+    profile = load_profile(args.profile, ROOT)
+    with Store(resolve_db(env)) as store:
+        run = store.get_run(args.run) if args.run else store.latest_run(modes=SUBSTANTIVE_MODES)
+        if run is None:
+            raise SystemExit("没有可导出的运行记录，先跑 census / watch / search")
+        rows, rank_of = ranked_rows_for_run(store, run["run_id"], profile)
+        existing = store.annotations()
+
+        items = []
+        for row in rows:
+            rank = rank_of.get(row["pid"])
+            if rank is None or rank > args.top:
+                continue
+            if args.only_missing and row["pid"] in existing:
+                continue
+            items.append(
+                {
+                    "pid": row["pid"],
+                    "short_id": short_id_for(row["pid"]),
+                    "rank": rank,
+                    "title": row["title"],
+                    "year": row["year"],
+                    "arxiv_id": row["arxiv_id"],
+                    "url": row["url"] or row["oa_url"],
+                    "l1": row["l1"],
+                    "abstract": row["abstract"],
+                    "has_summary": row["pid"] in existing,
+                }
+            )
+
+    if args.json:
+        emit(
+            {"run_id": run["run_id"], "profile": profile.name, "count": len(items),
+             "papers": items},
+            True,
+        )
+        return 0
+
+    print(f"运行 #{run['run_id']} · 前 {args.top} 名中导出 {len(items)} 篇")
+    print("=" * 78)
+    for item in items:
+        abstract = " ".join((item["abstract"] or "").split())
+        print(f"\n[{item['rank']}] {item['title']}")
+        print(f"    pid={item['pid']}  year={item['year']}  L1={item['l1']}")
+        if not abstract:
+            print("    (无摘要 —— 不要给它写简介，交人工判断)")
+        else:
+            print(f"    摘要：{abstract[:args.chars]}")
+    return 0
+
+
+def cmd_annotate(args, env) -> int:
+    """把简介写进账本。输入 JSONL，每行一个对象。
+
+        {"pid": "arxiv:2405.06134", "summary": "一句话说清在做什么",
+         "why_relevant": "可选：与你的方向的关系",
+         "quote": "可选：摘要原文片段"}
+
+    quote 会被校验必须逐字出现在摘要里 —— 与 L2 同一道防幻觉闸门。
+    """
+    from .normalize import clean_text
+
+    if args.file == "-":
+        text = sys.stdin.read()
+    else:
+        path = args.file if os.path.isabs(args.file) else os.path.join(ROOT, args.file)
+        if not os.path.exists(path):
+            raise SystemExit(f"找不到标注文件：{path}")
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+
+    entries = []
+    for line_no, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"第 {line_no} 行不是合法 JSON：{exc}")
+        if not isinstance(payload, dict) or not payload.get("summary"):
+            raise SystemExit(f"第 {line_no} 行缺少 summary 字段")
+        entries.append((line_no, payload))
+
+    if not entries:
+        raise SystemExit("没有可写入的标注（文件为空或全是注释）")
+
+    applied, rejected = [], []
+    with Store(resolve_db(env)) as store:
+        for line_no, payload in entries:
+            token = payload.get("pid") or payload.get("short_id")
+            pid = store.resolve_pid(token) if token else None
+            if pid is None:
+                rejected.append((line_no, token, "账本里找不到这篇论文"))
+                continue
+
+            row = store.get_paper(pid)
+            abstract = clean_text(row["abstract"]) if row else ""
+            quote = clean_text(payload.get("quote"))
+
+            # 防幻觉闸门：与 L2 一致。有 quote 就必须真在摘要里，
+            # 否则这句话是编的，而用户正是靠它决定读不读。
+            if quote:
+                if not abstract:
+                    rejected.append((line_no, token, "该论文没有摘要，无法校验 quote"))
+                    continue
+                if quote.lower() not in abstract.lower():
+                    rejected.append(
+                        (line_no, token, f"quote 不逐字出现在摘要里，疑似编造：{quote[:40]}")
+                    )
+                    continue
+
+            store.set_annotation(
+                pid,
+                summary=payload["summary"],
+                why_relevant=payload.get("why_relevant"),
+                quote=quote or None,
+                source=payload.get("source") or args.source,
+                model=payload.get("model"),
+            )
+            applied.append((token, pid, payload["summary"]))
+        stats = store.stats()
+
+    if args.json:
+        emit(
+            {"applied": len(applied), "rejected": rejected,
+             "annotated_total": stats["annotated"]},
+            True,
+        )
+    else:
+        print(f"写入 {len(applied)} 条简介（账本累计 {stats['annotated']} 条）")
+        for token, _pid, summary in applied[:5]:
+            print(f"  · {token}: {summary[:60]}")
+        if len(applied) > 5:
+            print(f"  · …另有 {len(applied) - 5} 条")
+        if rejected:
+            print(f"\n拒绝 {len(rejected)} 条：")
+            for line_no, token, reason in rejected:
+                print(f"  ✗ 第 {line_no} 行 {token}: {reason}")
+    return 0
 
 
 def cmd_import(args, env) -> int:
@@ -591,6 +741,19 @@ def build_parser() -> argparse.ArgumentParser:
     p = common(sub.add_parser("import-census", help="导入冷启动账本 seed-census.json"))
     p.add_argument("--file", default=os.path.join("data", "seed-census.json"))
     p.set_defaults(func=cmd_import)
+
+    p = common(sub.add_parser("dump", help="导出前 N 名候选（含摘要），供 agent 写简介"))
+    p.add_argument("--run", type=int, default=None)
+    p.add_argument("--top", type=int, default=15, help="导出前多少名，默认 15")
+    p.add_argument("--chars", type=int, default=700, help="摘要截断到多少字符")
+    p.add_argument("--only-missing", dest="only_missing", action="store_true",
+                   help="只导出还没有简介的")
+    p.set_defaults(func=cmd_dump)
+
+    p = common(sub.add_parser("annotate", help="把简介写回账本（JSONL 输入）"))
+    p.add_argument("file", nargs="?", default="-", help="JSONL 文件路径，- 表示标准输入")
+    p.add_argument("--source", default="agent", help="来源标记，默认 agent")
+    p.set_defaults(func=cmd_annotate)
 
     p = common(sub.add_parser("seed-sync", help="按 ID 精确抓取 profile 里的种子论文（补召回漏洞）"))
     p.set_defaults(func=cmd_seed_sync)

@@ -15,6 +15,7 @@ sys.path.insert(0, ROOT)
 from papers.config import load_profile  # noqa: E402
 from papers.screen import (  # noqa: E402
     bucket_of,
+    detect_core_signal,
     detect_injection,
     is_review_row,
     paper_date,
@@ -283,8 +284,10 @@ class TestRankBasedBucketing(unittest.TestCase):
     """回归：848 篇候选被绝对阈值切成 106 篇"强烈建议读"—— 等于没筛。
     改为按名次分桶，保证简报长度与语料规模无关。"""
 
-    def _row(self, l1, abstract="text"):
-        return {"l1": l1, "l2": None, "abstract": abstract, "llm_json": None}
+    def _row(self, l1, abstract="text", core=True):
+        detail = json.dumps({"has_core_signal": core})
+        return {"l1": l1, "l2": None, "abstract": abstract,
+                "llm_json": None, "l1_detail": detail}
 
     def test_rank_within_strong_top(self):
         self.assertEqual(
@@ -334,6 +337,82 @@ class TestRankBasedBucketing(unittest.TestCase):
 
     def test_is_review_row_false_for_normal(self):
         self.assertFalse(is_review_row(self._row(0.80), PROFILE))
+
+    # ── 核心安全信号门槛 ────────────────────────────────────────────
+    def test_no_core_signal_cannot_be_strong(self):
+        """回归：实测 watch 前 15 名里 11 篇没有明确安全信号
+        （水下声学识别、音乐评审、声乐教练、声码器探针）。"""
+        row = self._row(0.90, core=False)
+        self.assertEqual(bucket_of(row, PROFILE, has_llm=False, rank=1), "maybe")
+
+    def test_no_core_signal_still_can_be_maybe(self):
+        """不命中的论文不该被丢弃，只是最多进"扫一眼"。"""
+        row = self._row(0.90, core=False)
+        self.assertEqual(bucket_of(row, PROFILE, has_llm=False, rank=30), "maybe")
+
+    def test_no_core_signal_beyond_maybe_is_archived(self):
+        row = self._row(0.90, core=False)
+        self.assertEqual(bucket_of(row, PROFILE, has_llm=False, rank=200), "archived")
+
+    def test_missing_detail_is_treated_as_no_core(self):
+        row = {"l1": 0.9, "l2": None, "abstract": "t", "llm_json": None, "l1_detail": None}
+        self.assertEqual(bucket_of(row, PROFILE, has_llm=False, rank=1), "maybe")
+
+
+class TestCoreSignalDetection(unittest.TestCase):
+    def test_detects_unambiguous_security_vocabulary(self):
+        self.assertTrue(
+            detect_core_signal("Audio Jailbreak on LALMs", "", PROFILE.core_terms)
+        )
+        self.assertTrue(
+            detect_core_signal("Muting Whisper", "an adversarial attack", PROFILE.core_terms)
+        )
+        self.assertTrue(
+            detect_core_signal("", "prompt injection against speech models", PROFILE.core_terms)
+        )
+
+    def test_generic_ml_vocabulary_is_not_a_core_signal(self):
+        """回归：这些词在任何音频 ML 论文里都有，不能算安全信号。"""
+        generic = [
+            "LALM hallucination detection with alignment",
+            "Underwater acoustic recognition benchmark for LALMs",
+            "Natural-language vocal coaching from community feedback",
+            "Probing neural audio codecs with speaker traits",
+        ]
+        for text in generic:
+            self.assertEqual(
+                detect_core_signal(text, text, PROFILE.core_terms), [],
+                f"不该判定为安全信号：{text}",
+            )
+
+    def test_dedupes_across_title_and_abstract(self):
+        hits = detect_core_signal(
+            "Audio Jailbreak Attacks", "We study audio jailbreak attacks.", PROFILE.core_terms
+        )
+        self.assertEqual(len(hits), len(set(hits)))
+
+    def test_empty_terms_returns_empty(self):
+        self.assertEqual(detect_core_signal("audio jailbreak", "", []), [])
+
+    def test_score_l1_records_core_flag(self):
+        security = {
+            "title": "Audio Jailbreak Attacks on Speech Language Models",
+            "abstract": "We present an audio jailbreak against LALMs.",
+            "year": 2025, "categories": ["cs.CR"], "sources": ["arxiv"],
+            "arxiv_id": "2501.99999",
+        }
+        _, detail = score_l1(security, PROFILE)
+        self.assertTrue(detail["has_core_signal"])
+        self.assertTrue(detail["core_terms"])
+
+        generic = {
+            "title": "A Benchmark for Underwater Acoustic Recognition",
+            "abstract": "We evaluate LALMs on underwater signals.",
+            "year": 2025, "categories": ["eess.AS"], "sources": ["arxiv"],
+            "arxiv_id": "2501.99998",
+        }
+        _, detail = score_l1(generic, PROFILE)
+        self.assertFalse(detail["has_core_signal"])
 
 
 class TestBuckets(unittest.TestCase):

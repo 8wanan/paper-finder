@@ -29,6 +29,7 @@ __all__ = [
     "bucket_of",
     "is_review_row",
     "detect_injection",
+    "detect_core_signal",
     "LLMScreener",
     "L1_WEIGHTS",
 ]
@@ -292,6 +293,41 @@ def _score_seed(paper, seed_keys) -> float:
     return 0.0
 
 
+def detect_core_signal(title, abstract, core_terms) -> list:
+    """返回命中的**核心安全信号**词；空列表表示"没有明确的安全信号"。
+
+    为什么要单独判一次：威胁轴得分只说明"出现了一些安全相关词汇"，而
+    perturbation / detection / alignment / hallucination 在**任何**音频 ML 论文里
+    都会出现。实测 watch 运行的前 15 名里 11 篇连一个明确安全信号都没有
+    （水下声学识别、音乐评审、声乐教练、声码器探针）。
+    """
+    if not core_terms:
+        return []
+    weight_map = {str(term).lower(): 1.0 for term in core_terms if str(term).strip()}
+    hits = _find_matches(clean_text(title), weight_map)
+    hits += _find_matches(clean_text(abstract), weight_map)
+    seen, out = set(), []
+    for _weight, term in hits:
+        if term not in seen:
+            seen.add(term)
+            out.append(term)
+    return out
+
+
+def _has_core_signal(row) -> bool:
+    """从已算好的 l1_detail 里读核心信号标记。"""
+    raw = row["l1_detail"] if not isinstance(row, dict) else row.get("l1_detail")
+    if not raw:
+        return False
+    try:
+        detail = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(detail, dict):
+        return False
+    return bool(detail.get("has_core_signal"))
+
+
 def score_l1(paper, profile, query_hits: int = 0, today=None):
     """计算完整的 L1 分数，返回 (score, detail)。"""
     lex, lex_detail = score_lexical(
@@ -341,6 +377,11 @@ def score_l1(paper, profile, query_hits: int = 0, today=None):
             seed_floor_applied = floor
             total = floor
 
+    # 核心安全信号：进强推桶的必要条件（见 config.DEFAULT_CORE_TERMS）
+    core_hits = detect_core_signal(
+        paper.get("title"), paper.get("abstract"), profile.core_terms
+    )
+
     detail = {
         **lex_detail,
         "lex": round(lex, 4),
@@ -353,6 +394,8 @@ def score_l1(paper, profile, query_hits: int = 0, today=None):
         "is_seed": is_seed,
         "frozen_recency": frozen,
         "seed_floor_applied": seed_floor_applied,
+        "core_terms": core_hits,
+        "has_core_signal": bool(core_hits),
         "title_terms": lex_detail["title_terms"],
         "abstract_terms": lex_detail["abstract_terms"],
     }
@@ -481,9 +524,11 @@ def bucket_of(row, profile, has_llm: bool, rank: int | None = None) -> str:
     if not abstract and l1 >= thresholds["needs_review_l1_min"]:
         return "review"
 
-    # 4) L1-only：按名次分桶，保证简报长度与语料规模无关
+    # 4) L1-only：按名次分桶，保证简报长度与语料规模无关。
+    #    但强推桶额外要求**核心安全信号** —— 否则"水下声学识别""声乐教练"
+    #    这类词面上沾边的论文会占据强推名额（实测发生过）。
     if rank is not None:
-        if rank <= thresholds["strong_top"]:
+        if rank <= thresholds["strong_top"] and _has_core_signal(row):
             return "strong"
         if rank <= thresholds["maybe_top"]:
             return "maybe"

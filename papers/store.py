@@ -28,7 +28,7 @@ from .normalize import (
 
 __all__ = ["Store", "SCHEMA_VERSION", "SUBSTANTIVE_MODES"]
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # 会产生"可读简报"的运行模式。`import` 与 `seed-sync` 只是记账，不算。
 SUBSTANTIVE_MODES = ("census", "search", "watch")
@@ -127,6 +127,21 @@ CREATE TABLE IF NOT EXISTS citations (
   dst_pid    TEXT NOT NULL,
   src_source TEXT NOT NULL,
   PRIMARY KEY (src_pid, dst_pid, src_source)
+);
+
+-- 论文简介（"这篇在讲什么"）。
+-- 为什么单独一张表而不是复用 llm_json：
+--   llm_json 里的 L2 分数会影响**分桶**（走 l2 绝对阈值那条分支）。
+--   而简介只该影响**展示** —— 如果复用，写一次简介就会把刚修好的
+--   "按名次分桶"覆盖掉，漏斗重新失效。两者语义不同，必须分开存。
+CREATE TABLE IF NOT EXISTS annotations (
+  pid          TEXT PRIMARY KEY,
+  summary      TEXT NOT NULL,   -- 一句话说清这篇在做什么
+  why_relevant TEXT,            -- 可选：与研究者方向的关系
+  quote        TEXT,            -- 可选：摘要原文片段，用于校验不是编的
+  source       TEXT NOT NULL DEFAULT 'agent',  -- agent | llm | manual
+  model        TEXT,
+  created_at   TEXT NOT NULL
 );
 """
 
@@ -337,6 +352,9 @@ class Store:
         self.conn.execute("DELETE FROM paper_queries WHERE pid=?", (drop,))
         self.conn.execute("UPDATE OR IGNORE llm_cache SET pid=? WHERE pid=?", (keep, drop))
         self.conn.execute("DELETE FROM llm_cache WHERE pid=?", (drop,))
+        # 简介也要重指向，否则论文合并（预印本↔正式版）时简介会丢
+        self.conn.execute("UPDATE OR IGNORE annotations SET pid=? WHERE pid=?", (keep, drop))
+        self.conn.execute("DELETE FROM annotations WHERE pid=?", (drop,))
         self.conn.execute("UPDATE OR IGNORE citations SET src_pid=? WHERE src_pid=?", (keep, drop))
         self.conn.execute("UPDATE OR IGNORE citations SET dst_pid=? WHERE dst_pid=?", (keep, drop))
         self.conn.execute("DELETE FROM citations WHERE src_pid=? OR dst_pid=?", (drop, drop))
@@ -514,6 +532,31 @@ class Store:
             for row in self.conn.execute("SELECT * FROM decisions").fetchall()
         }
 
+    # ── 论文简介 ────────────────────────────────────────────────────
+    def set_annotation(self, pid, summary, why_relevant=None, quote=None,
+                       source="agent", model=None):
+        self.conn.execute(
+            "INSERT INTO annotations(pid, summary, why_relevant, quote, source, model, created_at) "
+            "VALUES(?,?,?,?,?,?,?) "
+            "ON CONFLICT(pid) DO UPDATE SET summary=excluded.summary, "
+            "why_relevant=excluded.why_relevant, quote=excluded.quote, "
+            "source=excluded.source, model=excluded.model, created_at=excluded.created_at",
+            (pid, clean_text(summary), clean_text(why_relevant) or None,
+             clean_text(quote) or None, source, model, iso_now()),
+        )
+        self.conn.commit()
+
+    def annotation(self, pid):
+        return self.conn.execute(
+            "SELECT * FROM annotations WHERE pid=?", (pid,)
+        ).fetchone()
+
+    def annotations(self) -> dict:
+        return {
+            row["pid"]: row
+            for row in self.conn.execute("SELECT * FROM annotations").fetchall()
+        }
+
     def set_decision(self, pid, decision, reason=None, tags=None):
         self.conn.execute(
             "INSERT INTO decisions(pid, decision, reason, tags, decided_at) VALUES(?,?,?,?,?) "
@@ -544,6 +587,7 @@ class Store:
             "decisions": scalar("SELECT COUNT(*) FROM decisions"),
             "scored": scalar("SELECT COUNT(*) FROM papers WHERE l1 IS NOT NULL"),
             "llm_cached": scalar("SELECT COUNT(*) FROM llm_cache"),
+            "annotated": scalar("SELECT COUNT(*) FROM annotations"),
             "by_year": {
                 str(row["year"]): row["n"]
                 for row in self.conn.execute(

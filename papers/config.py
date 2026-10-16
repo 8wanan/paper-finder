@@ -27,19 +27,36 @@ DEFAULT_THREAT_WEIGHTS = {
         "deepfake", "model extraction", "data extraction",
     ],
     "mid": [
-        "attack", "vulnerability", "perturbation", "adversarial example",
-        "red teaming", "guardrail", "alignment", "defense", "detection",
+        "attack", "vulnerability", "adversarial example",
+        "red teaming", "guardrail", "defense", "detection",
         "security", "privacy", "threat", "evasion", "hijack", "manipulation",
         "misuse", "injection", "anti-spoofing", "watermark",
-        # 实测补入：Careless Whisper（转写幻觉危害）因为标题里只有
-        # "Hallucination" 和 "Harms"，威胁轴得 0 分，排到了 701 名。
-        "hallucination", "misinformation", "harm", "toxicity",
+        "misinformation", "harm", "toxicity",
     ],
     "low": [
+        # 实测降权：这几个词在**任何**音频 ML 论文里都会出现，不是安全信号。
+        # 一篇 LALM 幻觉评测论文靠 hallucination + detection 就能把威胁轴打满，
+        # 混进"强烈建议读"。降权后它们只是辅助信号，不足以进强推桶。
+        "perturbation", "alignment", "hallucination",
         "robustness", "safety", "harmful", "malicious", "risk", "leakage",
         "provenance", "authentication", "trustworthy", "unsafe",
     ],
 }
+
+# 核心安全信号：进"强烈建议读"桶的**必要条件**。
+# 威胁轴得分只能说明"出现了一些安全词汇"，而这类词汇在通用音频 ML 论文里
+# 到处都是。实测 watch 运行前 15 名里 11 篇连一个明确安全信号都没有
+# （水下声学识别、音乐评审、声乐教练、声码器探针）。所以强推桶加一道硬门槛。
+# 不命中的论文不会被丢弃，只是最多进"值得扫一眼"。
+DEFAULT_CORE_TERMS = [
+    "audio jailbreak", "voice jailbreak", "spoken jailbreak", "jailbreak",
+    "prompt injection", "adversarial", "spoofing", "anti-spoofing",
+    "backdoor", "poisoning", "over-the-air", "membership inference",
+    "voice cloning", "impersonation", "deepfake", "model extraction",
+    "data extraction", "attack", "vulnerability", "threat", "evasion",
+    "hijack", "manipulation", "misuse", "injection", "red teaming",
+    "unauthorized", "privacy leakage",
+]
 
 DEFAULT_TOPIC_WEIGHTS = {
     "high": [
@@ -200,6 +217,14 @@ class Profile:
 
     def topic_term_weight_map(self) -> dict:
         return self._weight_map("topic_terms", DEFAULT_TOPIC_WEIGHTS)
+
+    @property
+    def core_terms(self) -> list:
+        """核心安全信号词表。profile 没配就用默认（见 DEFAULT_CORE_TERMS）。"""
+        raw = self.scoring.get("core_terms")
+        if raw is None:
+            return list(DEFAULT_CORE_TERMS)
+        return [str(v).lower() for v in raw if str(v).strip()]
 
     @property
     def category_weights(self) -> dict:
