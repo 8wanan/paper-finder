@@ -290,6 +290,37 @@ class Profile:
         return float(self.scoring.get("lex_denominator") or 9.0)
 
     @property
+    def max_age_days(self) -> int | None:
+        """日报只展示最近多少天内的**预印本**；None 表示不做新鲜度过滤。
+
+        为什么需要：会议补录会把去年的论文也拉进账本（这对回溯很有用），
+        但"今天的日报"里出现 2025 年的旧论文会让用户以为工具没在更新。
+        """
+        raw = self.data.get("max_age_days")
+        if raw in (None, "", 0, "0"):
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def conference_max_age_days(self) -> int | None:
+        """会议论文的新鲜度窗口，默认 = 预印本窗口的 6 倍。
+
+        会议是年度节奏：一篇 4 个月前在 S&P 发表的论文对读者仍是新的，
+        用预印本的 30 天窗口一刀切会把整本会议判成旧的（实测）。
+        """
+        raw = self.data.get("conference_max_age_days")
+        if raw not in (None, "", 0, "0"):
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                pass
+        base = self.max_age_days
+        return base * 6 if base else None
+
+    @property
     def venue_whitelist(self) -> list:
         return [str(v).lower() for v in (self.scoring.get("venue_whitelist") or [])]
 

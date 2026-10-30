@@ -505,6 +505,7 @@ def _render_and_write(store, profile, run_id, args, env, log, out_path=None):
     markdown, id_map, brief_stats = render_brief(
         store, profile, run_id=run_id, has_llm=has_llm,
         max_per_bucket=(int(args.max_per_bucket) or None),
+        include_maybe=not getattr(args, "hide_maybe", False),
     )
     if getattr(args, "stdout", False):
         return None, brief_stats, markdown, id_map
@@ -976,8 +977,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--llm", action="store_true", help="启用 L2 语义精排（需 LLM_API_KEY）")
         p.add_argument("--llm-top", dest="llm_top", type=int, default=40,
                        help="L2 只对 L1 前 N 篇执行（成本闸门，默认 40）")
-        p.add_argument("--max-per-bucket", dest="max_per_bucket", type=int, default=40,
-                       help="简报每个区块最多渲染多少行，0 表示不限")
+        p.add_argument("--max-per-bucket", dest="max_per_bucket", type=int, default=10,
+                       help="简报每个区块最多渲染多少行，0 表示不限（默认 10）")
         p.add_argument("--stdout", action="store_true", help="把简报打到标准输出而不写文件")
         return p
 
@@ -1043,8 +1044,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_opts(p)
     p.add_argument("--force", action="store_true", help="已采集过的会议也重采")
     p.add_argument("--no-conferences", dest="no_conferences", action="store_true", help="跳过会议补录")
-    p.add_argument("--out", default=None, help="日报输出路径（默认 briefs/daily-<date>.md）")
-    p.set_defaults(func=cmd_daily)
+    p.add_argument("--show-maybe", dest="hide_maybe", action="store_false",
+                   help="也渲染「值得扫一眼」区块（默认只给最相关的 10 篇）")
+    p.add_argument("--out", default=None, help="日报输出路径（默认 briefs/daily-<profile>-<date>.md）")
+    p.set_defaults(func=cmd_daily, hide_maybe=True)
 
     p = common(sub.add_parser("rescore", help="重算分数（改完 profile 用，默认覆盖整个账本）"))
     p.add_argument("--run", type=int, default=None, help="只重算该次运行的论文，默认整个账本")

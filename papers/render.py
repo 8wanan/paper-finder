@@ -11,15 +11,19 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
+import re
 
 from .normalize import clean_text, short_id as short_id_for
 from .store import SUBSTANTIVE_MODES
 
-__all__ = ["render_brief", "short_id_for", "write_sidecar", "SIDECAR_SUFFIX"]
+__all__ = ["render_brief", "short_id_for", "write_sidecar", "SIDECAR_SUFFIX", "row_date"]
 
 SIDECAR_SUFFIX = ".pids.json"
+
+_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 
 _BUCKET_TITLES = {
     "strong": "🔥 强烈建议读",
@@ -27,6 +31,63 @@ _BUCKET_TITLES = {
     "review": "🆕 需人工确认（无摘要或疑似注入）",
     "archived": "📦 其余候选（未展开）",
 }
+
+
+def row_date(row):
+    """取一篇论文的"最新可能日期"，用于判断它够不够新。
+
+    有精确发表日期就用它；只有年份时取**该年 12 月 31 日**（宽松口径）：
+    宁可把年末的论文算新，也不要把一篇 12 月发表的顶会论文误判成旧的。
+    """
+    published = row["published"] if not isinstance(row, dict) else row.get("published")
+    match = _DATE_RE.match(clean_text(published))
+    if match:
+        try:
+            return _dt.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            pass
+    year = row["year"] if not isinstance(row, dict) else row.get("year")
+    if year:
+        try:
+            return _dt.date(int(year), 12, 31)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def drop_stale(buckets, max_age_days, conference_max_age_days=None, today=None):
+    """「只要新的」：过期论文从展示桶挪进归档桶。
+
+    两个窗口（实测教训）：预印本的"新"是**天**级（arXiv 每天都有新货），
+    而会议论文的"新"是**会议周期**级 —— 一篇 4 个月前在 S&P 上发表的论文，
+    对读者仍是新的；用 30 天窗口一刀切会把整本会议都判成旧的。
+    所以默认给会议论文一个更宽的窗口。
+
+    为什么放在渲染层而不是打分层：新鲜度是**展示口径**，不是相关性判断。
+    打分层保留全量排序（历史论文仍可查、可被 `decide --pid` 救回），
+    只是每天的日报不把它们排进来。
+    """
+    if not max_age_days and not conference_max_age_days:
+        return 0
+    from . import venues
+
+    today = today or _dt.date.today()
+    narrow = today - _dt.timedelta(days=int(max_age_days or 0))
+    wide = today - _dt.timedelta(days=int(conference_max_age_days or max_age_days or 0))
+    moved = 0
+    for key in ("strong", "maybe", "review"):
+        keep = []
+        for row in buckets[key]:
+            when = row_date(row)
+            venue = row["venue"] if not isinstance(row, dict) else row.get("venue")
+            cutoff = wide if venues.status(venue) == "conference" else narrow
+            if when is not None and when < cutoff:
+                buckets["archived"].append(row)
+                moved += 1
+            else:
+                keep.append(row)
+        buckets[key] = keep
+    return moved
 
 
 def build_id_map(rows) -> dict:
@@ -212,11 +273,14 @@ def _headers(show_venue: bool):
 
 
 def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10,
-                 max_per_bucket=None, reviewer=None):
+                 max_per_bucket=None, reviewer=None, include_maybe=True):
     """生成 Markdown 简报，返回 (markdown, id_map, stats)。
 
     max_per_bucket：每个展开区块最多渲染多少行。search 模式一次可能带回上百篇
     候选，简报必须保持"5 分钟能读完"的长度，所以按分数截断并如实报告被截断的数量。
+
+    include_maybe：是否渲染「值得扫一眼」区块。日报把它关掉 —— 用户只想要
+    最相关的几篇，多出来的"This 也相关"只会稀释注意力。
 
     run_id 为空时取最近一次**有实质内容的**运行（跳过 import / seed-sync 记账）。
     """
@@ -251,6 +315,14 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
     buckets = {"strong": [], "maybe": [], "review": [], "archived": []}
     for row in rows:
         buckets[reviewer(row, rank_of.get(row["pid"]))].append(row)
+
+    # 「只要新的」：把超过 profile.max_age_days 的论文挪进归档，
+    # 不删除、不降分，只是不出现在今天的日报里。
+    stale = drop_stale(
+        buckets,
+        getattr(profile, "max_age_days", None),
+        getattr(profile, "conference_max_age_days", None),
+    )
 
     # 简介：有则用它替代"关键词命中"那一栏
     annotations = store.annotations()
@@ -298,6 +370,10 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
             "跑 `papers.py dump` 后由 agent 写简介，简报会多出「简介」一栏。"
         )
     lines.append("")
+    max_age = getattr(profile, "max_age_days", None)
+    if max_age:
+        lines.append(f"> 只显示近 **{int(max_age)}** 天内的论文；更早的被移入「其余候选」，仍可 `decide --pid` 找回。")
+        lines.append("")
     lines.append(
         "> 在最后一列把 `[ ]` 改成 `[k]`(读) / `[m]`(稍后) / `[d]`(丢弃)，"
         "然后执行 `papers.py decide <本文件>` 回写判定。"
@@ -307,7 +383,8 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
 
     show_venue = bool(getattr(profile, "venues", None))
     header_plain, header_summary = _headers(show_venue)
-    for key in ("strong", "maybe", "review"):
+    sections = ("strong", "maybe", "review") if include_maybe else ("strong", "review")
+    for key in sections:
         items = buckets[key]
         lines.append(f"## {_BUCKET_TITLES[key]}（{len(items)} 篇）")
         lines.append("")
@@ -365,6 +442,7 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
         "new": n_new,
         "ledger_total": n_total,
         "buckets": {k: len(v) for k, v in buckets.items()},
+        "stale_dropped": stale,
         "mode": "l1+l2" if has_llm else "l1-only",
         "summaries": sum(1 for row in rows if row["pid"] in annotations),
     }

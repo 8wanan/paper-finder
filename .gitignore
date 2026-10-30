@@ -22,6 +22,8 @@ pdfs/
 briefs/
 *.brief.md
 runs/
+# agent 写的一句话简介（属于个人判断，不进版本库）
+data/*.jsonl
 
 # 每日任务的日志（含抓取进度，体积不大但没必要进版本库）
 logs/

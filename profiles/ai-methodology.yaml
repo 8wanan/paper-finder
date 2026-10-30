@@ -248,9 +248,13 @@ negative:
     - security
     - agent
 
+# 日报只展示最近 30 天（同 ai-vuln-discovery 的理由）
+max_age_days: 30
+
 thresholds:
-  strong_top: 10
-  maybe_top: 30
+  # 方法论这一轨噪声更大，每天最多推 10 篇，其中强推 8 篇即可
+  strong_top: 8
+  maybe_top: 10
   l1_strong: 0.65
   l1_maybe: 0.45
   l1_min_keep: 0.30

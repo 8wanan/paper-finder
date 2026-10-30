@@ -205,11 +205,13 @@ scoring:
   # 进"强烈建议读"的必要条件：必须命中至少一个**明确的任务信号**。
   # 不命中的不会被丢弃，只是最多进"值得扫一眼"。
   core_terms:
+    # 实测（2026-10-30）：把 `bug` 和 `patch` 放进核心词会让"coding agent 修 bug"
+    # 这类方法论论文混进强推桶（它们只命中这两个泛词）。这里只保留
+    # **明确指向漏洞**的信号，`bug`/`patch` 仍留在打分轴里，但不足以进强推桶。
     - vulnerability
     - fuzzing
     - exploit
     - poc
-    - patch
     - program repair
     - cve
     - zero-day
@@ -221,7 +223,6 @@ scoring:
     - taint analysis
     - reverse engineering
     - penetration testing
-    - bug
 
   category_weights:
     cs.CR: 0.40
@@ -321,10 +322,19 @@ negative:
     - memory safety
     - zero-day
 
+# ── 新鲜度：日报只展示最近 N 天 ───────────────────────────────────────
+# 会议补录会把 2025 年的论文也拉进账本（回溯有用），但"今天的日报"里出现
+# 去年的论文会让人以为工具没在更新。所以展示层按天过滤：
+# 有精确发表日期用日期，只有年份的按该年 12/31 算（宽松口径）。
+# 被过滤的论文不删除、不降分，只是进「其余候选」，仍可 decide --pid 找回。
+max_age_days: 30
+
 # ── 阈值 ───────────────────────────────────────────────────────────
 thresholds:
-  strong_top: 15
-  maybe_top: 40
+  # 每天最多推 10 篇：这个方向的信号密度还撑不起更长的必读清单，
+  # 10 篇以外的一律进「值得扫一眼」，日报默认不渲染（--show-maybe 可看）。
+  strong_top: 10
+  maybe_top: 10
   l1_strong: 0.65
   l1_maybe: 0.45
   l1_min_keep: 0.30
