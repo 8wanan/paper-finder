@@ -1,0 +1,271 @@
+# paper-finder 领域配置 · AI 方法论（为「AI 挖洞」服务的方法论）
+#
+# 这个 profile 的边界必须先说清楚，否则日报会退化：
+#
+#   ✗ 不是"通用 LLM 方法论" —— 那是每月 5000+ 篇的量级（实测 2026-09：
+#     all:"LLM agent" 5631 篇/月），任何"普查/全量打分"都无意义，
+#     简报必然变成 arXiv 全站 Top15，三天后你就不看了。
+#   ✓ 是"能直接搬进挖洞系统的方法论" —— agent 架构、工具调用与沙箱、
+#     上下文/记忆压缩、规划与长程任务、评测 harness 与基准、后训练与
+#     test-time compute。每条查询都带"代码/软件/安全"锚点来控噪。
+#
+# 因此这个 profile 没有 Tier A 普查（census 为空），只有检索式的每日扫描：
+# watch_scope: all 表示每日增量用 search + generation 查询。
+
+name: ai-methodology
+display_name: AI 方法论 · 顶会日报
+version: 0.1
+updated: 2026-10-30
+
+sources:
+  - arxiv
+  - openalex
+
+venue_policy: plus_preprint
+venues:
+  - ccs
+  - sp
+  - usenix
+  - ndss
+  - icse
+  - fse
+  - ase
+  - issta
+  - neurips
+  - icml
+  - iclr
+  - acl
+  - emnlp
+  - naacl
+  - aaai
+
+watch_scope: all
+
+interest: |
+  关注**可以搬进"AI 挖洞"系统的方法论**：LLM/agent 的系统设计（规划、工具调用、
+  沙箱执行、多 agent 协作）、上下文工程与记忆压缩、长程任务的稳定性与成本控制、
+  评测 harness 与基准设计、后训练与强化学习、test-time compute 与推理。
+  判断标准是"能不能用在我的漏洞发现/利用 agent 上"，而不是"是不是一个 LLM 技巧"。
+  不关注：纯模型能力刷榜、与代码/软件/安全无关的通用 NLP 方法。
+
+# Tier A 为空是刻意的：方法论不可穷举，硬做普查只会得到噪声。
+census:
+  depth: 200
+  queries: []
+
+# ── 每日检索集 ─────────────────────────────────────────────────────
+# expect 为 2026-10-30 实测全量命中数，量大是预期的（检索式，不是普查）。
+search:
+  default_top: 20
+  queries:
+    - id: M1
+      q: '(all:"LLM agent" OR all:"LLM-based agent" OR all:"agentic") AND (all:"vulnerability" OR all:"fuzzing" OR all:"exploit" OR all:"program analysis")'
+      expect: 5819
+    - id: M2
+      q: '(all:"tool use" OR all:"function calling" OR all:"tool calling") AND all:"LLM" AND (all:"code" OR all:"software" OR all:"security")'
+      expect: 1192
+    - id: M3
+      q: '(all:"long-horizon" OR all:"long horizon") AND (all:"agent" OR all:"LLM")'
+      expect: 3348
+    - id: M4
+      q: '(all:"retrieval-augmented" OR all:"context engineering") AND all:"LLM" AND (all:"code" OR all:"software")'
+      expect: 1341
+    - id: M5
+      q: '(all:"benchmark" OR all:"harness") AND (all:"LLM agent" OR all:"agentic") AND (all:"software engineering" OR all:"vulnerability" OR all:"code")'
+      expect: 6816
+    - id: M6
+      q: '(all:"post-training" OR all:"reinforcement learning") AND all:"LLM" AND (all:"code" OR all:"vulnerability")'
+      expect: 2463
+    - id: M7
+      q: '(all:"test-time compute" OR all:"reasoning") AND all:"LLM" AND (all:"vulnerability" OR all:"code")'
+      expect: 7435
+  generation_probes:
+    - id: G1
+      q: '(all:"agent scaffold" OR all:"agent harness" OR all:"agent framework") AND (all:"security" OR all:"vulnerability" OR all:"code")'
+    - id: G2
+      q: '(all:"context engineering" OR all:"memory compression" OR all:"compaction") AND all:"agent"'
+    - id: G3
+      q: '(all:"SWE-bench" OR all:"SWE-agent" OR all:"terminal-bench" OR all:"cybench")'
+
+# ── 打分特征 ────────────────────────────────────────────────────────
+# 与 ai-vuln-discovery 相反的方向：这里的第一条轴是**方法**，第二条轴是
+# **代码/安全**。S_lex = S_method × (0.5 + 0.5 × S_domain)。
+scoring:
+  task_terms:      # 方法轴
+    high:
+      - llm agent
+      - agentic
+      - agent framework
+      - agent scaffold
+      - tool use
+      - function calling
+      - long-horizon
+      - context engineering
+      - memory compression
+      - retrieval-augmented
+      - post-training
+      - reinforcement learning
+      - multi-agent
+      - test-time compute
+      - benchmark
+      - harness
+      - planning
+      - verifier
+    mid:
+      - agent
+      - prompt
+      - fine-tuning
+      - distillation
+      - chain-of-thought
+      - reasoning
+      - sandbox
+      - execution feedback
+      - evaluation
+      - dataset
+      - in-context learning
+    low:
+      - model
+      - transformer
+      - llm
+      - language model
+  ai_terms:        # 代码/安全锚点轴
+    high:
+      - vulnerability
+      - fuzzing
+      - exploit
+      - program analysis
+      - code
+      - software
+      - security
+      - repair
+      - patch
+    mid:
+      - static analysis
+      - testing
+      - debugging
+      - repository
+      - compiler
+      - binary
+      - repository-level
+    low:
+      - engineering
+      - tool
+      - development
+
+  core_terms:
+    - agent
+    - tool use
+    - function calling
+    - planning
+    - benchmark
+    - harness
+    - reasoning
+    - post-training
+    - context engineering
+    - scaffold
+    - verifier
+
+  category_weights:
+    cs.SE: 0.35
+    cs.CR: 0.30
+    cs.LG: 0.25
+    cs.AI: 0.25
+    cs.CL: 0.20
+    cs.PL: 0.10
+
+  recency_tau_days: 365
+  venue_whitelist:
+    - "IEEE S&P"
+    - "ACM CCS"
+    - "USENIX Security"
+    - NDSS
+    - ICSE
+    - FSE
+    - ASE
+    - ISSTA
+    - NeurIPS
+    - ICML
+    - ICLR
+    - ACL
+    - EMNLP
+    - NAACL
+    - AAAI
+  venue_scores:
+    whitelist: 1.0
+    preprint: 0.7
+    other: 0.2
+
+rubric:
+  dimensions:
+    - key: method_core
+      label: 方法核心性
+      desc: 是否提出可复用的方法论/架构，而不只是把 LLM 当工具用一次
+      anchors:
+        "0": 纯应用，没有任何方法层面的贡献
+        "1": 组合已有方法，改进很局部
+        "2": 有明确的方法设计（架构/流程/训练目标）
+        "3": 提出可复用的框架级方法，别人能照着做
+    - key: vuln_relevance
+      label: 与挖洞的关系
+      desc: 能不能直接搬到漏洞发现/利用/修复的流水线上
+      anchors:
+        "0": 与代码/安全无关
+        "1": 只做通用代码任务（补全、单测生成），需大量改造
+        "2": 面向软件工程任务，改造后可迁移
+        "3": 直接面向漏洞/安全/程序分析
+    - key: evidence
+      label: 实证强度
+      desc: 是否有可复现的基准与基线对比
+      anchors:
+        "0": 只给示例或个案
+        "1": 单基准、无强基线
+        "2": 多基准 + 基线对比
+        "3": 多基准 + 消融 + 成本/稳定性分析
+    - key: transferable
+      label: 可迁移性
+      desc: 换目标/换模型/换语言时是否还成立
+      anchors:
+        "0": 强绑定单一模型或单一数据集
+        "1": 需要大量重调
+        "2": 换目标需少量适配
+        "3": 与模型/目标无关，可直接复用
+
+negative:
+  scope: title
+  terms:
+    - medical
+    - legal
+    - education
+    - sentiment analysis
+    - recommendation system
+    - machine translation
+    - image generation
+    - speech recognition
+  safety_overrides:
+    - vulnerability
+    - code
+    - software
+    - security
+    - agent
+
+thresholds:
+  strong_top: 10
+  maybe_top: 30
+  l1_strong: 0.65
+  l1_maybe: 0.45
+  l1_min_keep: 0.30
+  l2_strong: 8
+  l2_maybe: 5
+  needs_review_l1_min: 0.50
+  seed_score_floor: 0.65
+
+# ── 会议采集：这一轨暂不配置 ─────────────────────────────────────────
+# 原因（实测）：方法论的主战场是 NeurIPS/ICLR/ICML，它们的官方通道是 OpenReview，
+# 而本机访问 api2.openreview.net 返回 403；用 OpenAlex 拿不到完整会议清单。
+# 这些会议的论文绝大多数有 arXiv 版，所以每日 arXiv 扫描已经覆盖了主要部分。
+# 想补会议：拿一个 OpenAlex source id 加进来即可（CCS/ICSE/FSE/ASE 都有）。
+conferences: []
+
+seeds:
+  frozen_recency: true
+  items: []

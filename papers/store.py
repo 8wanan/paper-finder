@@ -17,6 +17,7 @@ import json
 import os
 import sqlite3
 
+from . import venues
 from .normalize import (
     alias_keys,
     clean_text,
@@ -31,7 +32,8 @@ __all__ = ["Store", "SCHEMA_VERSION", "SUBSTANTIVE_MODES"]
 SCHEMA_VERSION = 2
 
 # 会产生"可读简报"的运行模式。`import` 与 `seed-sync` 只是记账，不算。
-SUBSTANTIVE_MODES = ("census", "search", "watch")
+# `conference` 是整本会议采集，产出的是同一张表，当然要能出简报。
+SUBSTANTIVE_MODES = ("census", "search", "watch", "conference")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -278,6 +280,13 @@ class Store:
             if _is_blank(old_value):
                 updates.append(f"{column}=?")
                 params.append(new_value)
+                continue
+            # venue 的特殊处理：先看到 arXiv 预印本、后看到会议版时，旧值（空或
+            # "arXiv"）会把会议信息永远挡住。所以会议来源可以**覆盖**非会议 venue。
+            if column == "venue" and incoming.get("_authoritative_venue"):
+                if venues.status(old_value) != "conference":
+                    updates.append("venue=?")
+                    params.append(new_value)
         merged_sources = sorted(set(_jload(row["sources"], [])) | set(incoming["_sources"]))
         updates.append("sources=?")
         params.append(json.dumps(merged_sources))
@@ -306,6 +315,7 @@ class Store:
             "oa_url": clean_text(paper.get("oa_url")) or None,
             "url": clean_text(paper.get("url")) or None,
             "_sources": [s for s in sources if s],
+            "_authoritative_venue": bool(paper.get("venue_authoritative")),
         }
 
     # ── 合并（union-find 的收敛步骤）────────────────────────────────
@@ -399,6 +409,24 @@ class Store:
         )
 
     def commit(self):
+        self.conn.commit()
+
+    # ── 键值状态（会议是否已采集过、上次每日运行时间等）────────────────
+    def get_meta(self, key, default=None):
+        row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_meta(self, key, value):
+        """幂等的键值写入。
+
+        用途：`conf:ccs:2025 -> done`。会议清单只有发布那一刻有意义，
+        重复采集既浪费配额又会让「本轮新增」失真，所以必须记住采过哪些。
+        """
+        self.conn.execute(
+            "INSERT INTO meta(key, value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, "" if value is None else str(value)),
+        )
         self.conn.commit()
 
     def latest_run(self, modes=None):

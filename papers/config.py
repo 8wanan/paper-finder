@@ -154,6 +154,31 @@ class Profile:
         return int((self.data.get("census") or {}).get("depth") or 300)
 
     @property
+    def source_names(self) -> list:
+        """profile 声明要启用的数据源；空则用默认（arxiv + openalex）。
+
+        为什么让 profile 决定：语音安全方向 arXiv 就够（会议论文都首发预印本），
+        但顶会方向必须带 OpenAlex —— 同一条命令在不同 profile 下该用的源不一样。
+        """
+        raw = self.data.get("sources")
+        if not raw:
+            return []
+        return [str(item).strip().lower() for item in raw if str(item).strip()]
+
+    @property
+    def watch_queries(self) -> list:
+        """每日增量扫描用哪些查询。
+
+        `watch_scope: census`（默认）只扫 Tier A —— 那才是"这个领域"的定义性查询；
+        `watch_scope: all` 把 Tier B 与世代探针也扫进来，用于"方法论"这类
+        没有明确边界的 profile（它的查询本身就是检索式的）。
+        """
+        scope = str(self.data.get("watch_scope") or "census").strip().lower()
+        if scope == "all":
+            return self.census_queries + self.search_queries + self.generation_probes
+        return self.census_queries
+
+    @property
     def search_queries(self):
         """Tier B：检索排序用。"""
         return self._queries_from((self.data.get("search") or {}).get("queries"))
@@ -193,13 +218,32 @@ class Profile:
         return self.data.get("scoring") or {}
 
     def _resolved_terms(self, section: str, defaults: dict) -> dict:
-        raw = self.scoring.get(section) or {}
-        # 兼容旧格式：早期版本只有一张 term_weights 表，视为威胁轴
-        if not raw and section == "threat_terms":
-            raw = self.scoring.get("term_weights") or {}
+        """解析一条轴的术语表。
+
+        轴名有两种叫法（迁移到 AI 挖洞时引入的可读别名）：
+          威胁轴 threat_terms  ≡ task_terms（做的是不是漏洞工作）
+          主题轴 topic_terms   ≡ ai_terms（是不是 AI 方法）
+        别名不是装饰：旧 profile 里"威胁 × 主题"是语音安全的语义，
+        新方向里这两条轴变成"任务 × AI"，沿用旧字段名会让配置文件读不懂。
+
+        只要 profile 显式提供了某一级，未提供的级别就按**空**处理，
+        而不是回落到语音方向的默认词表 —— 否则新 profile 会悄悄带上
+        "audio jailbreak" 这类完全不相关的词。
+        """
+        raw = self.scoring.get(section)
+        if not raw:
+            aliases = {"threat_terms": ("task_terms", "term_weights"), "topic_terms": ("ai_terms",)}
+            for alias in aliases.get(section, ()):
+                raw = self.scoring.get(alias)
+                if raw:
+                    break
+        raw = raw or {}
+        provided = bool(raw)
         resolved = {}
         for level in ("high", "mid", "low"):
-            values = raw.get(level) or defaults[level]
+            values = raw.get(level)
+            if values is None:
+                values = [] if provided else defaults[level]
             resolved[level] = [str(v).lower() for v in values if str(v).strip()]
         return resolved
 
@@ -236,6 +280,16 @@ class Profile:
         return float(self.scoring.get("recency_tau_days") or 540)
 
     @property
+    def lex_denominator(self) -> float:
+        """S_lex 的分母：一条轴上"多少加权命中算打满"。
+
+        默认 9.0（= 最高权重 3 × 标题倍率 3）是语音方向的标定：一个高权重术语
+        出现在标题里即打满。术语密集的方向（AI 挖洞）需要调高，否则几乎所有
+        相关论文都并列 1.0，排名退化成按年份排序。
+        """
+        return float(self.scoring.get("lex_denominator") or 9.0)
+
+    @property
     def venue_whitelist(self) -> list:
         return [str(v).lower() for v in (self.scoring.get("venue_whitelist") or [])]
 
@@ -254,6 +308,81 @@ class Profile:
     def safety_overrides(self) -> list:
         raw = (self.data.get("negative") or {}).get("safety_overrides") or []
         return [str(v).lower() for v in raw]
+
+    # ── 顶会口径（硬过滤，与 scoring.venue_whitelist 的加分逻辑分开）──────
+    @property
+    def venues(self) -> set:
+        """白名单会议，归一化成 key 集合（如 {"ccs","sp","usenix","icse"}）。
+
+        与 `scoring.venue_whitelist` 的区别：那个只影响打分（0.10 权重），
+        这个决定**放不放行**。两者可以不一致 —— 例如白名单里放一堆会议，
+        但只用其中几个做硬过滤。
+        """
+        from .venues import canonical, known_keys
+
+        raw = self.data.get("venues") or []
+        keys = set()
+        for item in raw:
+            text = str(item).strip().lower()
+            key = text if text in known_keys() else canonical(item)
+            if key:
+                keys.add(key)
+        return keys
+
+    @property
+    def venue_policy(self) -> str:
+        """off / plus_preprint / strict，见 venues.check_venue_policy。"""
+        policy = str(self.data.get("venue_policy") or "off").strip().lower()
+        return policy if policy in ("off", "plus_preprint", "strict") else "off"
+
+    # ── 顶会批量采集（census 之外的第二种来源形态）───────────────────
+    @property
+    def conferences(self) -> list:
+        """待批量采集的会议清单。
+
+        每条要么走 OpenAlex 的 source id（ccs/icse/fse 等有稳定收录的），
+        要么走会议官网 TOC（USENIX / ACL Anthology 这类 OpenAlex 缺收的）。
+        结构：
+          {venue: ccs, year: 2025, kind: openalex, source_id: S4393917527}
+          {venue: usenix, year: 2025, kind: usenix, url: https://...}
+        """
+        from .venues import canonical
+
+        items = []
+        for raw in self.data.get("conferences") or []:
+            if not isinstance(raw, dict):
+                continue
+            key = canonical(raw.get("venue"))
+            if not key:
+                continue
+            item = dict(raw)
+            item["venue"] = key
+            items.append(item)
+        return items
+
+    # ── L2 评分卡（每个维度 0-3 分，总分 3 × 维度数）────────────────────
+    @property
+    def rubric(self) -> dict | None:
+        """profile 里声明的评分卡；没声明返回 None（走内置的旧 rubric）。"""
+        raw = self.data.get("rubric")
+        if not isinstance(raw, dict):
+            return None
+        dimensions = [d for d in (raw.get("dimensions") or []) if isinstance(d, dict) and d.get("key")]
+        if len(dimensions) < 2:
+            return None
+        cleaned = []
+        for index, dimension in enumerate(dimensions[:6], 1):
+            anchors = dimension.get("anchors") or {}
+            cleaned.append(
+                {
+                    "key": str(dimension["key"]).strip(),
+                    "label": str(dimension.get("label") or dimension["key"]).strip(),
+                    "desc": str(dimension.get("desc") or "").strip(),
+                    "anchors": {str(k): str(v) for k, v in anchors.items()},
+                    "index": index,
+                }
+            )
+        return {"dimensions": cleaned, "max": 3 * len(cleaned)}
 
     # ── 阈值 ────────────────────────────────────────────────────────
     @property

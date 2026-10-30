@@ -116,10 +116,25 @@ def _escape_cell(text: str) -> str:
     return clean_text(text).replace("|", "\\|")
 
 
-def _row_markdown(row, short_id: str, has_llm: bool, is_new: bool, annotation=None) -> str:
+def _venue_cell(row) -> str:
+    """简报的「会议」列：已中会显示归一化后的会议名，未发表显示「预印本」。"""
+    from . import venues as venues_mod
+
+    venue = row["venue"] if not isinstance(row, dict) else row.get("venue")
+    key = venues_mod.canonical(venue)
+    if key:
+        return _escape_cell(venues_mod.display(key))
+    if venues_mod.is_preprint(venue):
+        return "预印本"
+    return _escape_cell(str(venue)[:40])
+
+
+def _row_markdown(row, short_id: str, has_llm: bool, is_new: bool, annotation=None,
+                  show_venue: bool = False) -> str:
     title = _escape_cell(row["title"]) or "(无标题)"
     url = row["url"] or row["oa_url"] or ""
     title_cell = f"[{title}]({url})" if url else title
+    venue_cell = f" {_venue_cell(row)} |" if show_venue else ""
 
     year = row["year"] if row["year"] is not None else "—"
     l1 = row["l1"]
@@ -164,9 +179,9 @@ def _row_markdown(row, short_id: str, has_llm: bool, is_new: bool, annotation=No
         summary = _escape_cell(annotation["summary"])
         why = _escape_cell(annotation["why_relevant"] or "")
         cell = f"{summary}　→　{why}" if why else summary
-        return f"| `{short_id}` | {new_cell} | {title_cell} | {cell} | {year} | [ ] |"
+        return f"| `{short_id}` | {new_cell} | {title_cell} |{venue_cell} {cell} | {year} | [ ] |"
 
-    return f"| `{short_id}` | {new_cell} | {title_cell} | {year} | {l1_cell} | {basis} | [ ] |"
+    return f"| `{short_id}` | {new_cell} | {title_cell} |{venue_cell} {year} | {l1_cell} | {basis} | [ ] |"
 
 
 # 两种表头：有简介时用窄表（简介取代"分数+依据"，那两栏在有简介后是噪声）
@@ -178,6 +193,22 @@ _HEADER_SUMMARY = (
     "| id | 新 | 标题 | 简介 | 年 | 决策 |\n"
     "|----|----|------|------|----|------|"
 )
+# 配了顶会白名单的 profile 多一栏「会议」—— 否则用户看不出这篇是不是顶会，
+# 而这正是这套配置存在的理由。
+_HEADER_PLAIN_VENUE = (
+    "| id | 新 | 标题 | 会议 | 年 | 分数 | 依据 | 决策 |\n"
+    "|----|----|------|------|----|------|------|------|"
+)
+_HEADER_SUMMARY_VENUE = (
+    "| id | 新 | 标题 | 会议 | 简介 | 年 | 决策 |\n"
+    "|----|----|------|------|------|----|------|"
+)
+
+
+def _headers(show_venue: bool):
+    if show_venue:
+        return _HEADER_PLAIN_VENUE, _HEADER_SUMMARY_VENUE
+    return _HEADER_PLAIN, _HEADER_SUMMARY
 
 
 def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10,
@@ -241,7 +272,9 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
     n_total = store.conn.execute("SELECT COUNT(*) AS n FROM papers").fetchone()["n"]
 
     lines = []
-    lines.append(f"# 语音安全论文简报 · {run['started'][:10]}")
+    # 标题跟 profile 走：硬编码"语音安全"的版本在换方向后会误导用户
+    # （他打开的是 AI 挖洞日报，标题却写着语音安全）。
+    lines.append(f"# {profile.display_name} · 论文简报 · {run['started'][:10]}")
     lines.append("")
     lines.append(
         f"运行 #{run['run_id']} · 模式 `{run['mode']}` · profile `{run['profile'] or '—'}`"
@@ -272,6 +305,8 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
     )
     lines.append("")
 
+    show_venue = bool(getattr(profile, "venues", None))
+    header_plain, header_summary = _headers(show_venue)
     for key in ("strong", "maybe", "review"):
         items = buckets[key]
         lines.append(f"## {_BUCKET_TITLES[key]}（{len(items)} 篇）")
@@ -281,12 +316,13 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
             lines.append("")
             continue
         shown = items if not max_per_bucket else items[:max_per_bucket]
-        lines.append(_HEADER_SUMMARY if show_summary else _HEADER_PLAIN)
+        lines.append(header_summary if show_summary else header_plain)
         for row in shown:
             lines.append(
                 _row_markdown(
                     row, reverse[row["pid"]], has_llm, bool(row["is_new"]),
                     annotation=(annotations.get(row["pid"]) if show_summary else None),
+                    show_venue=show_venue,
                 )
             )
         if len(items) > len(shown):

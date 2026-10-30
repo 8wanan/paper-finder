@@ -13,11 +13,19 @@ import sys
 import time
 
 from .net import HttpError, RateLimited
-from .normalize import clean_text
+from .normalize import clean_text, norm_title
 from .screen import LLMScreener, bucket_of, passes_l0, score_l1
+from .sources import build_toc_source
 from .store import SUBSTANTIVE_MODES
 
-__all__ = ["run_queries", "rescore", "import_census_file", "seed_sync", "Log"]
+__all__ = [
+    "run_queries",
+    "rescore",
+    "import_census_file",
+    "seed_sync",
+    "collect_conferences",
+    "Log",
+]
 
 
 class Log:
@@ -260,6 +268,138 @@ def seed_sync(store, profile, sources, log=None):
     )
     return {"run_id": run_id, "fetched": fetched_total, "new": new_count,
             "without_id": without_id}
+
+
+def collect_conferences(store, profile, sources, client, run_id=None, log=None,
+                        only_missing=True, force=False):
+    """把 profile 里声明的整本会议论文拉进账本。
+
+    与 run_queries 的区别（为什么值得单独写一条路径）：
+      · 关键词检索只能拿到"命中查询"的子集，而"顶会全量"要求的是那个会议的
+        **完整清单**。用检索去逼近全量，永远差一截且说不清差在哪。
+      · 会议清单是一年一两次的批量事件，不是每日增量 —— 混进 watch 里会让
+        "今日新增"这个数字失真。
+
+    幂等：采集成功后在 meta 里记 `conf:<venue>:<year>=done`，下次跳过，
+    避免每天重复拉 455 篇。`--force` 可强制重采（会议官网补发论文时用）。
+
+    run_id 传了就把论文记进那个运行（daily 用它把「arXiv 增量」和「会议补录」
+    合成同一份简报），不传则自建一次 mode=conference 的运行。
+    """
+    log = log or Log()
+    conferences = profile.conferences
+    if not conferences:
+        log("  ! profile 没有配置 conferences 段，跳过会议采集")
+        return {"run_id": run_id, "conferences": 0, "fetched": 0, "new": 0, "rejected": 0}
+
+    own_run = run_id is None
+    if own_run:
+        run_id = store.start_run("conference", profile.name, [])
+        base = {"fetched": 0, "new": 0}
+    else:
+        row = store.get_run(run_id)
+        base = {
+            "fetched": int(row["n_fetched"] or 0) if row else 0,
+            "new": int(row["n_new"] or 0) if row else 0,
+        }
+
+    fetched_total = new_total = rejected = 0
+    collected = []
+    blocked = {}
+
+    for conf in conferences:
+        venue = conf.get("venue")
+        year = conf.get("year")
+        key = f"conf:{venue}:{year}"
+        kind = str(conf.get("kind") or "openalex").strip().lower()
+        if only_missing and not force and store.get_meta(key) == "done":
+            log(f"  · {venue} {year} 已采集过，跳过（--force 可重采）")
+            continue
+        if kind in blocked:
+            log(f"  · {venue} {year} 跳过：{kind} 源本轮已限流，明天再采（进度已记在账本里）")
+            continue
+
+        log(f"  → 采集 {venue} {year}（kind={kind}）")
+        try:
+            papers = _fetch_conference(conf, sources, client)
+        except RateLimited as exc:
+            # 关键：一个源被限流不能拖垮整轮。会议采集是**可分次**的，
+            # 采到的会议已经写进 meta，明天接着采即可（实测：无 key 的
+            # OpenAlex 共享额度会在拉三四本会议后耗尽，Retry-After 可达 20 小时）。
+            blocked[kind] = str(exc)
+            log(f"    ! 该源已限流，本轮放弃：{exc}")
+            continue
+        except (HttpError, LookupError, ValueError) as exc:
+            log(f"    ! 采集失败，跳过：{exc}")
+            continue
+
+        # 同一会议内按标题去重：官网 TOC 偶尔会把同一篇论文列两次（不同 session）
+        seen_titles, unique = set(), []
+        for paper in papers:
+            fingerprint = norm_title(paper.get("title"))
+            if not fingerprint or fingerprint in seen_titles:
+                continue
+            seen_titles.add(fingerprint)
+            unique.append(paper)
+
+        fetched_total += len(unique)
+        conf_new = 0
+        conf_rejected = 0
+        for paper in unique:
+            # 先判 L0 再入库：被会议口径/负向词挡掉的论文不该进账本。
+            # 账本是资产 —— 混进几千篇明确无关的论文（比如整本 USENIX 里的
+            # jailbreak 论文）会污染后续的账本统计与人工核查。
+            passed, reason = passes_l0(paper, profile)
+            if not passed:
+                conf_rejected += 1
+                log(f"      · 丢弃「{clean_text(paper.get('title'))[:50]}」：{reason}")
+                continue
+            pid, is_new = store.upsert(paper)
+            store.record_run_paper(run_id, pid, is_new)
+            if is_new:
+                conf_new += 1
+        store.commit()
+        new_total += conf_new
+        rejected += conf_rejected
+        if unique:
+            store.set_meta(key, "done")
+        log(f"    · 采到 {len(unique)} 篇，新增 {conf_new} 篇，L0 丢弃 {conf_rejected} 篇")
+        collected.append({"venue": venue, "year": year, "fetched": len(unique), "new": conf_new})
+
+    store.finish_run(
+        run_id,
+        n_fetched=base["fetched"] + fetched_total,
+        n_new=base["new"] + new_total,
+        n_strong=0,
+        note=f"会议采集 {len(collected)} 场；L0 丢弃 {rejected} 篇",
+    )
+    return {
+        "run_id": run_id,
+        "conferences": len(collected),
+        "fetched": fetched_total,
+        "new": new_total,
+        "rejected": rejected,
+        "details": collected,
+    }
+
+
+def _fetch_conference(conf, sources, client):
+    """按 kind 分派到对应采集器。"""
+    kind = str(conf.get("kind") or "openalex").strip().lower()
+    if kind == "openalex":
+        openalex = next((s for s in sources if s.name == "openalex"), None)
+        if openalex is None:
+            raise LookupError("需要先启用 openalex 源（--sources arxiv,openalex）")
+        source_id = conf.get("source_id")
+        if not source_id:
+            raise ValueError("openalex 会议条目缺少 source_id")
+        return openalex.fetch_venue(
+            source_id, year=conf.get("year"), limit=int(conf.get("limit") or 1200)
+        )
+    toc = build_toc_source(kind, client)
+    if toc is None:
+        raise LookupError(f"未知的会议采集器 kind={kind}")
+    return toc.fetch(conf)
 
 
 def import_census_file(store, path: str, log=None):

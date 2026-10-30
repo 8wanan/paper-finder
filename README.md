@@ -36,7 +36,60 @@ paper-finder 做三件事：
 
 ---
 
-## 快速开始
+## 两个新方向：AI 挖洞 / AI 方法论（顶会日报）
+
+这个仓库原来只配了「LLM 语音安全」。现在多了两条为**顶会日报**准备的 profile：
+
+| profile | 用途 | 数据源 | 会议口径 |
+|---|---|---|---|
+| `ai-vuln-discovery` | AI 做漏洞发现/利用/修复（AI 挖洞） | arXiv + OpenAlex + 会议官网 | 14 场顶会批量采集 + 每日 arXiv 增量 |
+| `ai-methodology` | 能搬进挖洞系统的方法论（agent/评测/上下文/后训练） | arXiv | 不采会议（ML 会议的 OpenReview 在本机 403） |
+| `llm-speech-security` | 原来的语音安全方向 | arXiv | 无（旧行为，未改动） |
+
+**一句话用法**（首次建议先跑一次会议补录，之后每天只跑 daily）：
+
+```bash
+python papers.py doctor  --profile ai-vuln-discovery     # 看机制是否就绪
+python papers.py collect --profile ai-vuln-discovery     # 一次性拉 14 场会议（幂等，可断点续）
+python papers.py daily   --profile ai-vuln-discovery     # 以后每天跑这个
+```
+
+`daily` 做两件事：① arXiv 近 N 天增量；② 把**还没采过**的会议补进来（采过就跳过）。
+输出在 `briefs/daily-<日期>.md`，简报多一栏「会议」——预印本显示"预印本"，已中会显示会议名。
+
+**每日自动跑**（Windows 计划任务，已在脚本里写好路径与证书处理）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\daily.ps1
+# 注册成每天 09:00：
+schtasks /create /tn "PaperFinderDaily" /sc daily /st 09:00 ^
+  /tr "powershell -NoProfile -ExecutionPolicy Bypass -File <仓库>\scripts\daily.ps1"
+```
+
+### 为什么不能只用 arXiv（实测，不是推测）
+
+2026-10-30 用 OpenAlex 统计 2025 年顶会的 arXiv 覆盖率：
+
+| 会议 | 记录数 | 其中带 arXiv 版本 | 覆盖率 |
+|---|---|---|---|
+| ACM CCS | 395 | 86 | 21.8% |
+| IEEE S&P | 264 | 59 | 22.3% |
+| NDSS | 211 | 47 | 22.3% |
+| ICSE | 342 | 123 | 36.0% |
+| FSE | 252 | 67 | 26.6% |
+| ASE | 395 | 112 | 28.4% |
+
+也就是说：**只吃 arXiv 会漏掉约 3/4 的顶会论文**。所以这条 profile 必须带
+OpenAlex（会议元数据 + 摘要）和会议官网 TOC（USENIX / ACL，OpenAlex 对它们缺收）。
+
+### 首次会议补录可能要分两天（现状，不是 bug）
+
+无 OpenAlex key 时配额是"同网段共享"，实测连续拉三四本会议就会 429，
+`Retry-After ≈ 20 小时`。程序的处理方式是：**已采到的会议记进账本 meta，本轮停止采剩下的**，
+第二天 `daily` 自动接着采。想一次跑完就申请个免费 key（见 `.env.example`）。
+
+---
+
 
 ```bash
 cd paper-finder
@@ -74,13 +127,15 @@ python papers.py eval
 
 | 命令 | 作用 |
 |---|---|
-| `doctor` | 自检环境、配置、数据源连通性 |
+| `doctor` | 自检环境、配置、数据源连通性（含顶会白名单与待采会议） |
 | `import-census` | 导入冷启动账本 `data/seed-census.json` |
 | `seed-sync` | 按 arXiv ID 精确抓取 profile 里的种子论文（补经典文献的召回漏洞） |
 | `census` | Tier A 全量普查 |
 | `search "<query>"` | 临时检索一个具体问题 |
 | `watch --days N` | 增量追踪 |
-| `rescore` | 不重新抓取，只重算分数（改完 profile 用，覆盖全账本约 1 秒） |
+| `collect` | **整本会议采集**：按 profile.conferences 拉某年的会议年鉴（幂等，`--force` 重采） |
+| `daily` | **每日**：arXiv 增量 + 未采过的会议补录，输出 `briefs/daily-<date>.md` |
+| `rescore` | 不重新抓取，只重算分数（改完 profile 用） |
 | `brief` | 生成 Markdown 简报 |
 | `dump --top 15` | 导出前 N 名候选（含摘要），供 agent 写简介 |
 | `annotate <file.jsonl>` | 把简介写回账本，简报会多出「简介」一栏 |

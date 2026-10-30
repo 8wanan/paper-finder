@@ -1,0 +1,405 @@
+# paper-finder 领域配置 · AI 挖洞（AI for Vulnerability Discovery）
+#
+# 与 llm-speech-security.yaml 的差别（读之前先看这三条）：
+#   1. 这是**顶会优先**的 profile：venue 从"0.10 权重的加分项"升级为**硬过滤**。
+#   2. 数据源是 arxiv + openalex 双源：实测顶会论文只有约 1/4 有 arXiv 版，
+#      只用 arXiv 会漏掉 3/4（见 README「为什么不能只用 arXiv」）。
+#   3. 查询里的术语用**短语**而不是单词：arXiv 的 all: 会做词干截断，
+#      实测 all:"exploitability" 命中 9 万条、all:"agentic" 命中 8 万条，
+#      单字词进 Tier A 等于没有召回门槛。
+
+name: ai-vuln-discovery
+display_name: AI 挖洞 · 顶会日报
+version: 0.1
+updated: 2026-10-30
+
+sources:
+  - arxiv
+  - openalex
+
+# ── 顶会口径：硬过滤 ────────────────────────────────────────────────
+# plus_preprint = 白名单会议 **或** 尚无 venue 的预印本。
+# 为什么保留预印本：这个方向的前沿首发 arXiv，会议版往往晚 3–9 个月；
+# 只收已中会等于每天看到的是"半年前的工作"。简报里用「会议」列区分两者。
+venue_policy: plus_preprint
+venues:
+  - ccs
+  - sp
+  - usenix
+  - ndss
+  - euros&p
+  - icse
+  - fse
+  - ase
+  - issta
+  - tse
+  - tosem
+  - tdsc
+  - neurips
+  - icml
+  - iclr
+  - acl
+  - emnlp
+
+# ── 研究兴趣：直接喂给 L2 精排 ──────────────────────────────────────
+interest: |
+  关注用 AI（尤其是大语言模型与 LLM agent）做**软件漏洞发现、利用与修复**的方法
+  与系统，以及相关的评测基准。具体包括：LLM/agent 驱动的漏洞检测与代码审计、
+  AI 辅助的模糊测试（种子/变异/覆盖率反馈/输入生成）、PoC 与 exploit 自动生成、
+  漏洞补丁生成与自动修复、二进制/反编译/固件层面的 AI 辅助分析、真实目标
+  （OSS-Fuzz、CVE、CTF、内核）上的端到端挖洞系统与基准评测。
+  不关注：只讨论模型自身安全的论文（越狱、投毒、对齐、幻觉、隐私泄露），
+  也不关注与安全无关的通用代码生成/补全。
+
+# ── Tier A：领域核心（一次性读完）────────────────────────────────────
+# 说明：arXiv 的 all: 是词干匹配，所以这里的每一条都由**多词短语**构成，
+# expect 是 2026-10-30 实测的全量命中数，仅作回归参考（代码不强制校验）。
+census:
+  depth: 300
+  queries:
+    - id: A1
+      q: '(all:"vulnerability discovery" OR all:"vulnerability detection" OR all:"vulnerability identification") AND (all:"large language model" OR all:"LLM")'
+      expect: 428
+    - id: A2
+      q: '(all:"fuzzing" OR all:"fuzzer" OR all:"fuzz testing") AND (all:"large language model" OR all:"LLM")'
+      expect: 279
+    - id: A3
+      q: '(all:"exploit generation" OR all:"PoC generation" OR all:"exploit synthesis" OR all:"vulnerability exploitation") AND (all:"large language model" OR all:"LLM")'
+      expect: 150
+    - id: A4
+      q: '(all:"vulnerability repair" OR all:"patch generation" OR all:"program repair") AND (all:"large language model" OR all:"LLM")'
+      expect: 370
+    - id: A5
+      q: '(all:"static analysis" OR all:"program analysis" OR all:"code audit" OR all:"security audit") AND (all:"large language model" OR all:"LLM")'
+      expect: 617
+    - id: A6
+      q: '(all:"zero-day" OR all:"0-day" OR all:"CVE" OR all:"vulnerability benchmark") AND (all:"large language model" OR all:"LLM")'
+      expect: 276
+    - id: A7
+      q: '(all:"LLM agent" OR all:"LLM-based agent" OR all:"agentic") AND (all:"penetration testing" OR all:"vulnerability discovery" OR all:"fuzzing")'
+      expect: 260
+    - id: A8
+      q: '(all:"binary" OR all:"decompilation" OR all:"reverse engineering") AND (all:"large language model" OR all:"LLM") AND (all:"vulnerability" OR all:"security")'
+      expect: 376
+
+# ── Tier B：邻域检索（不可穷举，只出 Top-N）──────────────────────────
+search:
+  default_top: 20
+  queries:
+    - id: B1
+      q: 'abs:"vulnerability" AND (abs:"LLM" OR abs:"large language model")'
+    - id: B2
+      q: 'abs:"code" AND (abs:"security" OR abs:"vulnerable") AND (abs:"agent" OR abs:"LLM")'
+    - id: B3
+      q: 'abs:"fuzzing" AND (abs:"neural" OR abs:"deep learning" OR abs:"language model")'
+    - id: B4
+      q: 'abs:"patch" AND abs:"vulnerability" AND (abs:"LLM" OR abs:"agent")'
+    - id: B5
+      q: '(abs:"benchmark" OR abs:"dataset") AND (abs:"vulnerability" OR abs:"exploit") AND (abs:"LLM" OR abs:"agent")'
+  # 世代化探针：覆盖术语漂移（AI 挖洞的术语三年换了三拨）
+  generation_probes:
+    - id: G1
+      q: '(all:"AI Cyber Challenge" OR all:"AIxCC" OR all:"cyber reasoning")'
+    - id: G2
+      q: '(all:"LLM" OR all:"agent") AND (all:"harness" OR all:"crash triage" OR all:"bug reproduction" OR all:"root cause")'
+    - id: G3
+      q: '(all:"LLM" OR all:"agent") AND (all:"sanitizer" OR all:"memory safety" OR all:"use-after-free" OR all:"buffer overflow")'
+
+# ── 分类探针：只做打分特征，不做召回门槛（实测分类交集召回不足）────────
+category_probes:
+  queries:
+    - id: C1
+      q: 'cat:cs.CR AND (cat:cs.SE OR cat:cs.LG)'
+    - id: C2
+      q: 'cat:cs.SE AND (cat:cs.CR OR cat:cs.AI)'
+  note: |
+    分类交集只作 S_cat 特征。实测 cs.CR×cs.SE 的论文里既有 AI 挖洞也有大量
+    传统程序分析，用它当召回门槛会把"只挂 cs.CR+cs.LG"的论文漏掉。
+
+# ── 打分特征 ────────────────────────────────────────────────────────
+scoring:
+  # 双轴门控：S_lex = S_task × (0.5 + 0.5 × S_ai)
+  # 一条轴是"做的是不是漏洞工作"（task），另一条是"是不是 AI 方法"（ai）。
+  task_terms:
+    high:
+      - vulnerability discovery
+      - vulnerability detection
+      - vulnerability identification
+      - vulnerability repair
+      - patch generation
+      - program repair
+      - exploit generation
+      - poc generation
+      - exploit synthesis
+      - fuzzing
+      - fuzz testing
+      - code audit
+      - security audit
+      - static analysis
+      - sanitizer
+      - zero-day
+      - memory safety
+      - crash triage
+      - penetration testing
+      - root cause
+    mid:
+      - vulnerability
+      - exploit
+      - bug
+      - bug finding
+      - taint analysis
+      - binary analysis
+      - decompilation
+      - reverse engineering
+      - attack surface
+      - attack
+      - malware
+      - overflow
+      - use-after-free
+      - injection
+      - cwe
+      - patch
+      - security
+      - threat
+    low:
+      - detection
+      - testing
+      - verification
+      - robustness
+      - program analysis
+      - software
+      - code
+      - privacy
+  ai_terms:
+    high:
+      - large language model
+      - llm
+      - llm agent
+      - agentic
+      - code language model
+      - foundation model
+      - gpt-4
+      - claude
+      - codex
+      - ai agent
+    mid:
+      - agent
+      - language model
+      - transformer
+      - deep learning
+      - neural network
+      - reinforcement learning
+      - fine-tuning
+      - prompt
+      - retrieval-augmented
+      - tool use
+      - multimodal
+      - gpt
+      - chatgpt
+    low:
+      - machine learning
+      - model
+      - artificial intelligence
+      - learning
+
+  # 进"强烈建议读"的必要条件：必须命中至少一个**明确的任务信号**。
+  # 不命中的不会被丢弃，只是最多进"值得扫一眼"。
+  core_terms:
+    - vulnerability
+    - fuzzing
+    - exploit
+    - poc
+    - patch
+    - program repair
+    - cve
+    - zero-day
+    - memory safety
+    - sanitizer
+    - code audit
+    - static analysis
+    - crash
+    - taint analysis
+    - reverse engineering
+    - penetration testing
+    - bug
+
+  category_weights:
+    cs.CR: 0.40
+    cs.SE: 0.35
+    cs.LG: 0.20
+    cs.AI: 0.20
+    cs.CL: 0.15
+    cs.PL: 0.15
+    cs.CY: 0.05
+
+  recency_tau_days: 540
+  # 实测（2026-10-30）：分母取默认 9 时，ASE 2026 的 15 篇强推分数全是 0.59，
+  # 排名退化成"按插入顺序"。这个方向的论文术语密度高，实测 24 才能分出层次
+  # （同一篇 CLEAR 从 1.0 降到 0.54，而只命中一个术语的论文降到 0.2 附近）。
+  lex_denominator: 24
+  venue_whitelist:
+    - "IEEE S&P"
+    - "ACM CCS"
+    - "USENIX Security"
+    - NDSS
+    - EuroS&P
+    - ICSE
+    - FSE
+    - ASE
+    - ISSTA
+    - "IEEE TSE"
+    - "ACM TOSEM"
+    - "IEEE TDSC"
+    - NeurIPS
+    - ICML
+    - ICLR
+    - ACL
+    - EMNLP
+  venue_scores:
+    whitelist: 1.0
+    preprint: 0.6
+    other: 0.2
+
+# ── L2 评分卡（4 维 × 0-3 = 12 分，与阈值 8 / 5 对应）────────────────
+rubric:
+  dimensions:
+    - key: task_fit
+      label: 任务契合
+      desc: 论文的核心任务是"发现/利用/修复软件漏洞"吗
+      anchors:
+        "0": 与漏洞无关（模型安全、代码生成、通用程序分析）
+        "1": 沾边但不做漏洞（如只做 bug 检测且不涉及安全后果）
+        "2": 做漏洞相关工作，但只是流程的一环或被当作下游应用
+        "3": 直接以漏洞发现/利用/修复为核心目标
+    - key: ai_core
+      label: AI 核心性
+      desc: AI（LLM/agent/学习型方法）是方法的主体还是附属工具
+      anchors:
+        "0": 传统方法，AI 只是对比基线
+        "1": AI 用于某个辅助环节（如排序、摘要）
+        "2": AI 参与核心环节，但仍需大量手工规则
+        "3": AI/agent 是方法主体，去掉它方法不成立
+    - key: evidence
+      label: 实证强度
+      desc: 是否在真实目标/基准上有可复现的量化结果
+      anchors:
+        "0": 只有想法或案例展示
+        "1": 小规模实验，缺少基线
+        "2": 有基准与基线，但范围有限
+        "3": 真实目标（CVE/OSS-Fuzz/内核/CTF）+ 多基线 + 消融
+    - key: transferable
+      label: 可迁移性
+      desc: 换一个目标/代码库/语言时，方法是否还能用
+      anchors:
+        "0": 只针对单一数据集或单一漏洞类型
+        "1": 需要大量领域定制
+        "2": 有一定通用性，换目标需少量适配
+        "3": 与目标无关，可直接迁移到我的课题
+
+# ── 负向词：AI 安全 ≠ AI 挖洞 ────────────────────────────────────────
+# 这条规则的由来：实测用旧 profile 跑新方向时，强推桶里混进了
+# "LLM 安全极性""多 agent 对抗攻击"等论文 —— 它们命中 AI 词但没有漏洞任务。
+# scope: title 是关键：这些词在摘要里是通用技术词（"LLM agent 做根因分析"
+# 的摘要会提 hallucination），只有写在标题里才说明"这篇就是在做模型安全"。
+negative:
+  scope: title
+  terms:
+    - jailbreak
+    - deepfake
+    - toxicity
+    - hallucination
+    - hate speech
+    - sentiment analysis
+    - recommendation system
+    - machine translation
+  safety_overrides:
+    - vulnerability
+    - exploit
+    - fuzzing
+    - sanitizer
+    - code audit
+    - memory safety
+    - zero-day
+
+# ── 阈值 ───────────────────────────────────────────────────────────
+thresholds:
+  strong_top: 15
+  maybe_top: 40
+  l1_strong: 0.65
+  l1_maybe: 0.45
+  l1_min_keep: 0.30
+  l2_strong: 8
+  l2_maybe: 5
+  needs_review_l1_min: 0.50
+  seed_score_floor: 0.65
+
+# ── 会议批量采集（collect / daily 用）────────────────────────────────
+# kind=openalex：按 OpenAlex 的会议 source id 拉整本年鉴（有摘要、有 DOI）
+# kind=usenix / acl：按会议官网 TOC 抓（OpenAlex 对它们缺收，实测 USENIX 全 0）
+# 采集成功会在账本 meta 里记 conf:<venue>:<year>=done，之后自动跳过（--force 可重采）。
+conferences:
+  - venue: usenix
+    year: 2026
+    kind: usenix
+    url: https://www.usenix.org/conference/usenixsecurity26/technical-sessions
+    venue_label: USENIX Security 2026
+  - venue: usenix
+    year: 2025
+    kind: usenix
+    url: https://www.usenix.org/conference/usenixsecurity25/technical-sessions
+    venue_label: USENIX Security 2025
+  - venue: sp
+    year: 2026
+    kind: openalex
+    source_id: S4210233669
+  - venue: sp
+    year: 2025
+    kind: openalex
+    source_id: S4210233669
+  - venue: ccs
+    year: 2025
+    kind: openalex
+    source_id: S4393917527
+  - venue: ndss
+    year: 2026
+    kind: openalex
+    source_id: S4306420590
+  - venue: ndss
+    year: 2025
+    kind: openalex
+    source_id: S4306420590
+  - venue: icse
+    year: 2026
+    kind: openalex
+    source_id: S4210203175
+  - venue: icse
+    year: 2025
+    kind: openalex
+    source_id: S4210203175
+  - venue: fse
+    year: 2026
+    kind: openalex
+    source_id: S4363608883
+  - venue: fse
+    year: 2025
+    kind: openalex
+    source_id: S4363608883
+  - venue: ase
+    year: 2026
+    kind: openalex
+    source_id: S4363608212
+  - venue: ase
+    year: 2025
+    kind: openalex
+    source_id: S4363608212
+  - venue: issta
+    year: 2025
+    kind: openalex
+    source_id: S7407085879
+
+# ── 种子论文：建议补 5–10 篇你认可的基线 ─────────────────────────────
+# 留空是刻意的：没有核实过的 arXiv ID 写进来只会制造"NOT FOUND"噪音。
+# 填法：title + year + arxiv_id（核实过再加），然后 `papers.py seed-sync`。
+seeds:
+  frozen_recency: true
+  items: []

@@ -41,6 +41,7 @@ from .evaluate import evaluate, format_report  # noqa: E402
 from .net import HttpClient, HttpError, RateLimited  # noqa: E402
 from .pipeline import (  # noqa: E402
     Log,
+    collect_conferences,
     import_census_file,
     rescore,
     run_queries,
@@ -138,6 +139,24 @@ def cmd_doctor(args, env) -> int:
             f"｜census {len(profile.census_queries)} 条 / search {len(profile.search_queries)} 条"
             f"｜种子 {len(profile.seeds)} 篇",
         )
+        # 顶会口径自检：策略写了但白名单是空的时候，venue 过滤会静默失效 ——
+        # 这种"看起来配了其实没配"的情况必须报警，否则用户以为在收顶会。
+        policy = profile.venue_policy
+        venues_count = len(profile.venues)
+        confs = profile.conferences
+        check(
+            "venue-policy",
+            not (policy != "off" and venues_count == 0),
+            f"策略 {policy}｜白名单 {venues_count} 个会议｜待采会议 {len(confs)} 场",
+        )
+        if confs:
+            missing = [c for c in confs if (c.get("kind") in (None, "openalex") and not c.get("source_id"))]
+            missing += [c for c in confs if c.get("kind") in ("usenix", "acl") and not c.get("url")]
+            check(
+                "conferences",
+                not missing,
+                f"{len(confs)} 场" + (f"；{len(missing)} 场缺 source_id/url" if missing else ""),
+            )
     except Exception as exc:
         check("profile", False, str(exc), fatal=True)
 
@@ -155,8 +174,14 @@ def cmd_doctor(args, env) -> int:
     except Exception as exc:
         check("ledger", False, str(exc), fatal=True)
 
-    check("openalex key", bool((env.get("OPENALEX_API_KEY") or "").strip()),
-          mask_secret(env.get("OPENALEX_API_KEY")))
+    # OpenAlex 的 key 不是"必要条件"：无 key 只能浅翻、可能 429，
+    # 但 2026-10-30 实测无 key 可用。所以这里报状态而不是报失败。
+    openalex_key = (env.get("OPENALEX_API_KEY") or "").strip()
+    check(
+        "openalex key",
+        True,
+        mask_secret(openalex_key) if openalex_key else "未设置（无 key 走浅翻，429 时自动降级）",
+    )
     check("llm key", bool((env.get("LLM_API_KEY") or "").strip()),
           mask_secret(env.get("LLM_API_KEY")))
 
@@ -386,7 +411,7 @@ def _select_queries(profile, args, mode: str):
     if mode == "search":
         return [{"id": "S1", "q": args.query, "expect": None, "tier": "search"}]
     if mode == "watch":
-        return profile.census_queries
+        return profile.watch_queries
     if args.tier == "census":
         return profile.census_queries
     if args.tier == "search":
@@ -397,30 +422,44 @@ def _select_queries(profile, args, mode: str):
     )
 
 
-def _run_and_screen(args, env, mode: str) -> int:
-    log = Log(not args.json)
+def _prepare(args, env, log, extra_sources=None):
+    """加载 profile / 数据源 / 客户端。三个命令共用，避免参数处理分叉。
+
+    extra_sources：命令需要、但 profile 没配在**检索源**里的数据源。
+    目前只有 collect/daily 用 openalex —— 它不参与关键词检索
+    （OpenAlex 的 search 是自由文本，喂 arXiv 的布尔语法没有意义），
+    只在"按会议拉年鉴"时使用，所以不能混进 profile.sources 的检索源里。
+    """
     profile = load_profile(args.profile, ROOT)
     client = make_client(env, log)
-
-    source_names = args.sources.split(",") if getattr(args, "sources", None) else None
-    sources, skipped = build_sources(env, client, names=source_names, log=log)
+    if getattr(args, "sources", None):
+        source_names = args.sources.split(",")
+    else:
+        source_names = list(profile.source_names or [])
+        for extra in extra_sources or []:
+            if extra not in source_names:
+                source_names.append(extra)
+        source_names = source_names or None
+    sources, skipped = build_sources(env, client, names=source_names, log=log, profile=profile)
     if not sources:
         raise SystemExit("没有任何可用数据源")
     for name, reason in skipped:
         log(f"  · 跳过数据源 {name}：{reason}")
+    return profile, sources, client
 
-    since_raw = getattr(args, "since", None)
-    from_date, since_year = parse_since(since_raw)
-    min_date = None
 
-    def _as_date(value):
-        if value and len(value) == 10:
-            try:
-                return _dt.date.fromisoformat(value)
-            except ValueError:
-                return None
-        return None
+def _as_date(value):
+    if value and len(value) == 10:
+        try:
+            return _dt.date.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
 
+
+def _harvest(args, env, mode, profile, sources, store, log):
+    """跑一轮查询并把候选写进账本，返回 run_id（不渲染简报）。"""
+    from_date, since_year = parse_since(getattr(args, "since", None))
     min_date = _as_date(from_date)
 
     if mode == "watch":
@@ -440,53 +479,166 @@ def _run_and_screen(args, env, mode: str) -> int:
     log(f"模式={mode} profile={profile.name} 查询 {len(queries)} 条 "
         f"数据源 {[s.name for s in sources]}")
     log("")
+    return run_queries(
+        store, profile, sources, queries,
+        limit=int(getattr(args, "limit", 100)),
+        from_date=from_date,
+        mode=mode,
+        min_year=since_year,
+        min_date=min_date,
+        sort="date" if mode == "watch" else "relevance",
+        log=log,
+    )
 
-    with Store(resolve_db(env)) as store:
-        run_id = run_queries(
-            store, profile, sources, queries,
-            limit=int(getattr(args, "limit", 100)),
-            from_date=from_date,
-            mode=mode,
-            min_year=since_year,
-            min_date=min_date,
-            sort="date" if mode == "watch" else "relevance",
-            log=log,
-        )
-        log("")
-        # 不给 run_id：给整个账本打分。打分是纯计算（1200 篇约 1 秒），
-        # 而"未打分的论文在排序里沉底"会让评测与简报都失真。
-        score_stats = rescore(
-            store, profile,
-            use_llm=bool(getattr(args, "llm", False)),
-            llm_top=int(getattr(args, "llm_top", 40)),
-            env=env, log=log,
-        )
-        has_llm = score_stats["l2"] > 0
-        markdown, id_map, brief_stats = render_brief(
-            store, profile, run_id=run_id, has_llm=has_llm,
-            max_per_bucket=(int(args.max_per_bucket) or None),
-        )
 
-    out_path = None
-    if not args.stdout:
+def _render_and_write(store, profile, run_id, args, env, log, out_path=None):
+    """打分 + 生成简报 + 落盘。返回 (out_path, brief_stats, markdown)。"""
+    # 不给 run_id：给整个账本打分。打分是纯计算（4500 篇约 3 秒），
+    # 而"未打分的论文在排序里沉底"会让评测与简报都失真。
+    score_stats = rescore(
+        store, profile,
+        use_llm=bool(getattr(args, "llm", False)),
+        llm_top=int(getattr(args, "llm_top", 40)),
+        env=env, log=log,
+    )
+    has_llm = score_stats["l2"] > 0
+    markdown, id_map, brief_stats = render_brief(
+        store, profile, run_id=run_id, has_llm=has_llm,
+        max_per_bucket=(int(args.max_per_bucket) or None),
+    )
+    if getattr(args, "stdout", False):
+        return None, brief_stats, markdown
+
+    if out_path is None:
         briefs_dir = os.path.join(ROOT, "briefs")
         os.makedirs(briefs_dir, exist_ok=True)
         out_path = os.path.join(briefs_dir, f"brief-{run_id}.md")
-        with open(out_path, "w", encoding="utf-8") as handle:
-            handle.write(markdown)
-        write_sidecar(out_path, id_map)
+    elif not os.path.isabs(out_path):
+        out_path = os.path.join(ROOT, out_path)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as handle:
+        handle.write(markdown)
+    write_sidecar(out_path, id_map)
+    return out_path, brief_stats, markdown
+
+
+def _run_and_screen(args, env, mode: str) -> int:
+    log = Log(not args.json)
+    profile, sources, _client = _prepare(args, env, log)
+
+    with Store(resolve_db(env)) as store:
+        run_id = _harvest(args, env, mode, profile, sources, store, log)
+        out_path, brief_stats, markdown = _render_and_write(store, profile, run_id, args, env, log)
+
+    if out_path:
         log("")
         log(f"简报已写入：{out_path}")
 
     if args.json:
         emit({"run_id": run_id, **brief_stats, "brief": out_path}, True)
-    elif args.stdout or out_path is None:
+    elif out_path is None:
         print(markdown)
     else:
         print(f"运行 #{run_id}｜候选 {brief_stats['candidates']} 篇｜新增 {brief_stats['new']} 篇")
         for key, value in brief_stats["buckets"].items():
             print(f"  {key:<9} {value}")
         print(f"\n打开简报查看：{out_path}")
+    return 0
+
+
+def cmd_collect(args, env) -> int:
+    """整本会议采集：把 profile.conferences 里声明的会议一次性拉进账本。
+
+    与 census 的区别：census 是"按关键词把你的领域读完"，collect 是
+    "按会议把某一年的正刊清单读完"。要做"顶会日报"，两者都需要。
+    """
+    log = Log(not args.json)
+    profile, sources, client = _prepare(args, env, log, extra_sources=["openalex"])
+
+    with Store(resolve_db(env)) as store:
+        result = collect_conferences(
+            store, profile, sources, client,
+            only_missing=not args.force, log=log,
+        )
+        run_id = result["run_id"]
+        if run_id is None:
+            raise SystemExit("没有可采集的会议，检查 profile 的 conferences 段")
+        if result["fetched"] == 0:
+            log("  · 本次没有采到新论文（可能都已采集过，用 --force 重采）")
+        out_path, brief_stats, markdown = _render_and_write(
+            store, profile, run_id, args, env, log, out_path=args.out
+        )
+
+    if args.json:
+        emit({"collect": result, **brief_stats, "brief": out_path}, True)
+    else:
+        print(f"会议采集：{result['conferences']} 场，取回 {result['fetched']} 篇，"
+              f"新增 {result['new']} 篇，L0 丢弃 {result['rejected']} 篇")
+        for item in result["details"]:
+            print(f"  · {item['venue']} {item['year']}: {item['fetched']} 篇（新增 {item['new']}）")
+        print(f"\n简报：{out_path}")
+    return 0
+
+
+def cmd_daily(args, env) -> int:
+    """每日采集：arXiv 增量 + 到期的会议补录，合成一份带日期的日报。
+
+    产品定义说明（不是实现细节）：会议是脉冲式发布（一年一两次），
+    "每天的顶会论文"在会议空窗期其实只有预印本。所以这里有两条输入：
+      1. watch（arXiv，按天）；
+      2. collect（会议，按"没采过就采"的幂等状态）。
+    简报里用「会议」列区分它们 —— 预印本显示"预印本"，已中会显示会议名。
+    """
+    log = Log(not args.json)
+    profile, sources, client = _prepare(args, env, log, extra_sources=["openalex"])
+
+    digest_dir = (env.get("PAPER_FINDER_DIGEST_DIR") or "").strip()
+    stamp = _dt.date.today().isoformat()
+    # 文件名带 profile：两个方向同一天都要出日报时，不能互相覆盖（实测踩到过）。
+    out_path = args.out or os.path.join(
+        ROOT, "briefs", f"daily-{profile.name}-{stamp}.md"
+    )
+
+    with Store(resolve_db(env)) as store:
+        run_id = _harvest(args, env, "watch", profile, sources, store, log)
+
+        conf_result = {"conferences": 0, "fetched": 0, "new": 0, "rejected": 0, "details": []}
+        if profile.conferences and not args.no_conferences:
+            log("")
+            log("会议补录（幂等：已采过的自动跳过）")
+            conf_result = collect_conferences(
+                store, profile, sources, client, run_id=run_id,
+                only_missing=not args.force, log=log,
+            )
+
+        out_path, brief_stats, markdown = _render_and_write(
+            store, profile, run_id, args, env, log, out_path=out_path
+        )
+        store.set_meta("daily:last", f"{stamp} run#{run_id}")
+
+    # 可选：把日报再拷一份到指定目录（比如被同步盘同步出去）
+    if digest_dir and out_path:
+        try:
+            target_dir = digest_dir if os.path.isabs(digest_dir) else os.path.join(ROOT, digest_dir)
+            os.makedirs(target_dir, exist_ok=True)
+            target = os.path.join(target_dir, os.path.basename(out_path))
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write(markdown)
+            log(f"日报副本：{target}")
+        except OSError as exc:
+            log(f"  ! 拷贝日报失败（不影响主流程）：{exc}")
+
+    if args.json:
+        emit({"run_id": run_id, **brief_stats, "collect": conf_result, "brief": out_path}, True)
+    else:
+        print(f"运行 #{run_id}｜候选 {brief_stats['candidates']} 篇｜新增 {brief_stats['new']} 篇"
+              f"｜会议补录 {conf_result['new']} 篇")
+        for key, value in brief_stats["buckets"].items():
+            print(f"  {key:<9} {value}")
+        if brief_stats["candidates"] == 0:
+            print("\n今天这个查询集没有命中新论文（窄领域常见）。")
+            print(f"想回看更长时间：python papers.py daily --days 7")
+        print(f"\n日报：{out_path}")
     return 0
 
 
@@ -778,6 +930,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--days", type=int, default=14, help="回溯天数，默认 14")
     run_opts(p)
     p.set_defaults(func=cmd_watch)
+
+    p = common(sub.add_parser("collect", help="整本会议采集（按 profile.conferences 拉某年年鉴）"))
+    run_opts(p)
+    p.add_argument("--force", action="store_true", help="已采集过的会议也重采")
+    p.add_argument("--out", default=None, help="简报输出路径")
+    p.set_defaults(func=cmd_collect)
+
+    p = common(sub.add_parser("daily", help="每日采集：arXiv 增量 + 会议补录，出一份带日期的日报"))
+    p.add_argument("--days", type=int, default=3, help="arXiv 回溯天数，默认 3")
+    run_opts(p)
+    p.add_argument("--force", action="store_true", help="已采集过的会议也重采")
+    p.add_argument("--no-conferences", dest="no_conferences", action="store_true", help="跳过会议补录")
+    p.add_argument("--out", default=None, help="日报输出路径（默认 briefs/daily-<date>.md）")
+    p.set_defaults(func=cmd_daily)
 
     p = common(sub.add_parser("rescore", help="重算分数（改完 profile 用，默认覆盖整个账本）"))
     p.add_argument("--run", type=int, default=None, help="只重算该次运行的论文，默认整个账本")
