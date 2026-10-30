@@ -57,6 +57,18 @@ class TestCanonical(unittest.TestCase):
         self.assertIsNone(venues.canonical("Database Systems Journal"))
         self.assertIsNone(venues.canonical("Oracle Cloud Infrastructure"))
 
+    def test_lookalike_conference_is_not_whitelisted(self):
+        """实测误判：SNPD 的全称里含 "International Conference on Software Engineering"，
+        曾被当成 ICSE 放进顶会池（一篇 IoT 入侵检测论文因此混进强推）。"""
+        snpd = ("Proc. IEEE/ACIS International Conference on Software Engineering, "
+                "Artificial Intelligence, Networking and Parallel/Distributed Computing (SNPD), 2025")
+        self.assertIsNone(venues.canonical(snpd))
+        # 真正的 ICSE 仍然要认出来
+        self.assertEqual(
+            venues.canonical("ACM/IEEE International Conference on Software Engineering: Companion Proceedings"),
+            "icse",
+        )
+
     def test_display(self):
         self.assertEqual(venues.display("ccs"), "ACM CCS")
         self.assertEqual(venues.display("USENIX Security Symposium 2025"), "USENIX Security")

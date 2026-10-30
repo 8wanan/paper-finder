@@ -248,8 +248,9 @@ negative:
     - security
     - agent
 
-# 日报只展示最近 30 天（同 ai-vuln-discovery 的理由）
-max_age_days: 30
+# 展示口径：顶会论文近 2 年、预印本近 90 天（同 ai-vuln-discovery）
+max_age_days: 90
+conference_max_age_days: 730
 
 thresholds:
   # 方法论这一轨噪声更大，每天最多推 10 篇，其中强推 8 篇即可

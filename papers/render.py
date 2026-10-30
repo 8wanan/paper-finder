@@ -191,7 +191,7 @@ def _venue_cell(row) -> str:
 
 
 def _row_markdown(row, short_id: str, has_llm: bool, is_new: bool, annotation=None,
-                  show_venue: bool = False) -> str:
+                  show_venue: bool = False, summary_layout: bool = False) -> str:
     title = _escape_cell(row["title"]) or "(无标题)"
     url = row["url"] or row["oa_url"] or ""
     title_cell = f"[{title}]({url})" if url else title
@@ -236,10 +236,17 @@ def _row_markdown(row, short_id: str, has_llm: bool, is_new: bool, annotation=No
 
     # 有简介时用它替换掉"关键词命中"那一栏 —— 后者只说明"为什么匹配上"，
     # 不说明"这篇在讲什么"，而后者才是用户决定读不读的依据。
+    #
+    # 表格是「简介版」但这篇没有简介时，必须补一句占位而不是退回旧列数 ——
+    # 否则同一张表里出现 7 列和 8 列两种行，Markdown 会直接错位（实测踩到）。
     if annotation is not None:
         summary = _escape_cell(annotation["summary"])
         why = _escape_cell(annotation["why_relevant"] or "")
         cell = f"{summary}　→　{why}" if why else summary
+        return f"| `{short_id}` | {new_cell} | {title_cell} |{venue_cell} {cell} | {year} | [ ] |"
+
+    if summary_layout:
+        cell = "（今日未写简介）" + (f"　{basis}" if basis else "")
         return f"| `{short_id}` | {new_cell} | {title_cell} |{venue_cell} {cell} | {year} | [ ] |"
 
     return f"| `{short_id}` | {new_cell} | {title_cell} |{venue_cell} {year} | {l1_cell} | {basis} | [ ] |"
@@ -383,8 +390,17 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
         )
     lines.append("")
     max_age = getattr(profile, "max_age_days", None)
-    if max_age:
-        lines.append(f"> 只显示近 **{int(max_age)}** 天内的论文；更早的被移入「其余候选」，仍可 `decide --pid` 找回。")
+    max_age_conf = getattr(profile, "conference_max_age_days", None)
+    if max_age or max_age_conf:
+        parts = []
+        if max_age_conf:
+            parts.append(f"顶会论文近 {int(max_age_conf // 365)} 年")
+        if max_age:
+            parts.append(f"预印本近 {int(max_age)} 天")
+        lines.append(
+            "> 展示口径：" + "、".join(parts)
+            + "；更早的被移入「其余候选」，仍可 `decide --pid` 找回。"
+        )
         lines.append("")
     lines.append(
         "> 在最后一列把 `[ ]` 改成 `[k]`(读) / `[m]`(稍后) / `[d]`(丢弃)，"
@@ -412,6 +428,7 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
                     row, reverse[row["pid"]], has_llm, bool(row["is_new"]),
                     annotation=(annotations.get(row["pid"]) if show_summary else None),
                     show_venue=show_venue,
+                    summary_layout=show_summary,
                 )
             )
         if len(items) > len(shown):

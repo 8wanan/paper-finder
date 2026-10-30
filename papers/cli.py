@@ -41,6 +41,7 @@ from .evaluate import evaluate, format_report  # noqa: E402
 from .net import HttpClient, HttpError, RateLimited  # noqa: E402
 from .pipeline import (  # noqa: E402
     Log,
+    attach_recent_conferences,
     collect_conferences,
     import_census_file,
     rescore,
@@ -611,6 +612,12 @@ def cmd_daily(args, env) -> int:
                 store, profile, sources, client, run_id=run_id,
                 only_missing=not args.force, log=log,
             )
+
+        # 口径：日报不是"只要最近几天"，而是"只要是顶会，近期的都可以"。
+        # 会议补录只在某一天发生，之后每天都得把近期顶会论文重新挂进本轮，
+        # 否则顶会论文只会在补录那天出现一次。
+        if not args.no_conferences:
+            attach_recent_conferences(store, profile, run_id, log=log)
 
         out_path, brief_stats, markdown, id_map = _render_and_write(
             store, profile, run_id, args, env, log, out_path=out_path

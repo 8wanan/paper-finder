@@ -1,0 +1,42 @@
+﻿运行 #20 · 前 10 名中导出 10 篇
+==============================================================================
+
+[1] Reva: Real-Time Vulnerability Detection through Contextual Probing of Large Language Models
+    pid=arxiv:2610.35829  year=2026  L1=0.7284
+    摘要：A vulnerability costs more to fix the later it is discovered. As coding agents generate code faster than developers can review it, software needs a first line of defense screening each new function in real time. LLM agents have recently become capable of finding real-world vulnerabilities by working as a security expert would: they run analysis tools, explore the surrounding code, test hypotheses and weigh the eviden
+
+[2] DeepAVR: Deep Analysis via Multi-Agent Collaboration for Automated Vulnerability Repair
+    pid=arxiv:2610.32345  year=2026  L1=0.7258
+    摘要：Automated Vulnerability Repair (AVR) has emerged as a critical defense against software security flaws, aiming to triage and fix bugs autonomously. Early LLM-based approaches focused on patch generation under the assumption of perfect fault localization, while recent end-to-end methods attempt to repair vulnerabilities directly from sanitizer logs. However, these methods often fail when the root cause is deeply hidde
+
+[3] deepSURF: Detecting Memory Safety Vulnerabilities in Rust Through Fuzzing LLM-Augmented Harnesses
+    pid=doi:10.1109/sp63933.2026.00060  year=2026  L1=0.6874
+    摘要：Although Rust ensures memory safety by default, it also permits the use of unsafe code, which can introduce memory safety vulnerabilities if misused. Unfortunately, existing tools for detecting memory bugs in Rust typically exhibit limited detection capabilities, inadequately handle Rust-specific types, or rely heavily on manual intervention. To address these limitations, we present deepSURF, a tool that integrates s
+
+[4] Structured Security Explanations for Learning-Based Vulnerability Detection
+    pid=arxiv:2610.37797  year=2026  L1=0.6623
+    摘要：Software vulnerability detection remains difficult because existing approaches rely on predefined analysis rules, learn vulnerability patterns implicitly from code and labels, or use large language models (LLMs) to make the final security judgment. It remains unclear whether structured descriptions of security-relevant program behavior can improve supervised detection. We present VulnLens, an explanation-augmented fr
+
+[5] RoleFUZZER: User-Behaviour Fuzzing for Role-Specification Adherence in Large Language Models
+    pid=arxiv:2610.38438  year=2026  L1=0.6601
+    摘要：Large language models (LLMs) are often conditioned into specific roles such as tutors, interviewers, or agents acting for an organisation, through system prompts that specify how they should behave. The extent to which they can actually adhere to these role specifications under multi-turn interactions with realistic and potentially problematic users is understudied. To address this, we propose user behaviour fuzzing,
+
+[6] VulDec: Vulnerability Detection in Binaries via Neural Decompilation
+    pid=arxiv:2610.33716  year=2026  L1=0.6465
+    摘要：Automated vulnerability detection in binary executables is challenging due to the lack of source code and the limited semantic information available at the assembly level. Despite significant progress in machine-learning-based code analysis, the field still lacks methodologies and large, high-quality datasets that provide vulnerable code jointly at assembly- and source-level with precise vulnerability labels. To addr
+
+[7] EchoFuzz: Empowering Smart Contract Fuzzing with Large Language Models
+    pid=doi:10.1145/3744916.3773166  year=2026  L1=0.6406
+    摘要：Smart contracts, serving as the cornerstone of decentralized applications, autonomously manage trillion-dollar digital assets, making them attractive targets for attacks. Fuzzing has emerged as a promising technique for detecting vulnerabilities in smart contracts, yet existing methods face two main challenges. (1) The logical gap in state transitions and combinatorial redundancy hinders effective tradeoffs between b
+
+[8] Repairing Broken Access Control in Web Applications with LLMs: An Empirical Benchmark Study
+    pid=arxiv:2610.34290  year=2026  L1=0.6318
+    摘要：Broken access control (BAC) ranks among the most severe web-application vulnerability classes, yet its automated repair remains largely unexplored. Unlike memory-safety vulnerabilities, BAC is a logic vulnerability whose repair demands a deep understanding of an application's access-control model and business semantics, which traditional automated vulnerability repair techniques handle poorly. Large language models (
+
+[9] Trusting the Tool: Asymmetric Deference of LLM Vulnerability Auditors to Static-Analysis Evidence
+    pid=doi:10.48550/arxiv.2610.32876  year=2026  L1=0.6251
+    摘要：Pipelines that combine large language models (LLMs) with static analysis let the model consume the analyser's output as evidence, but whether the model distinguishes true from false evidence, and whether its scrutiny depends on what the evidence claims, has not been measured. We built an intraprocedural analyser for C/C++ that produces proof obligations and audited vulnerable and patched functions from PrimeVul under
+
+[10] AWE: Adaptive Agents for Dynamic Web Penetration Testing
+    pid=doi:10.14722/last-x.2026.23037  year=2026  L1=0.6222
+    摘要：Modern web applications are increasingly produced through AI-assisted development and rapid no-code deployment pipelines, widening the gap between accelerating software velocity and the limited adaptability of existing security tooling. Pattern-driven scanners fail to reason about novel contexts, while emerging LLM-based penetration testers rely on unconstrained exploration, yielding high cost, unstable behavior, and

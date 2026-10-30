@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import sys
 import time
@@ -24,6 +25,7 @@ __all__ = [
     "import_census_file",
     "seed_sync",
     "collect_conferences",
+    "attach_recent_conferences",
     "Log",
 ]
 
@@ -410,6 +412,46 @@ def _fetch_conference(conf, sources, client):
     if toc is None:
         raise LookupError(f"未知的会议采集器 kind={kind}")
     return toc.fetch(conf)
+
+
+def attach_recent_conferences(store, profile, run_id, log=None):
+    """把账本里"近期顶会论文"挂进本轮运行，好让日报能一起展示。
+
+    为什么需要（用户口径修正）：需求是"只要是顶会，近期的都可以"，
+    不是"只要最近 30 天的新论文"。会议一年才发一两次，会议补录发生在
+    某一天、之后每天都不会再采 —— 如果日报只渲染"本轮抓到的"，那么
+    补录那天之后，顶会论文就再也不会出现在日报里了。
+
+    所以每天出报前，把账本里满足"白名单会议 + 会议窗口内"的论文
+    重新挂进当前 run（is_new=0，不影响"新增"计数），让打分层在
+    "新预印本 + 近期顶会"这个池子里统一排序。
+    """
+    log = log or Log()
+    from .render import row_date
+    from .venues import canonical
+
+    wanted = getattr(profile, "venues", set())
+    window = getattr(profile, "conference_max_age_days", None) or 730
+    today = _dt.date.today()
+    cutoff = today - _dt.timedelta(days=int(window))
+
+    rows = store.conn.execute(
+        "SELECT pid, venue, published, year FROM papers WHERE venue IS NOT NULL"
+    ).fetchall()
+    attached = 0
+    for row in rows:
+        key = canonical(row["venue"])
+        if not key or (wanted and key not in wanted):
+            continue
+        when = row_date({"published": row["published"], "year": row["year"]})
+        if when is not None and when < cutoff:
+            continue
+        store.record_run_paper(run_id, row["pid"], False)
+        attached += 1
+    store.commit()
+    if attached:
+        log(f"  · 近期顶会论文池：{attached} 篇并入本轮（窗口 {int(window)} 天，is_new=0）")
+    return attached
 
 
 def import_census_file(store, path: str, log=None):

@@ -313,6 +313,10 @@ negative:
     - sentiment analysis
     - recommendation system
     - machine translation
+    # 网络入侵检测 ≠ 漏洞挖掘：实测一篇 "Hybrid LLM-Enhanced Intrusion Detection
+    # for Zero-Day Threats in IoT" 仅凭标题里的 zero-day 就进了强推桶。
+    - intrusion detection
+    - malware detection
   safety_overrides:
     - vulnerability
     - exploit
@@ -322,12 +326,15 @@ negative:
     - memory safety
     - zero-day
 
-# ── 新鲜度：日报只展示最近 N 天 ───────────────────────────────────────
-# 会议补录会把 2025 年的论文也拉进账本（回溯有用），但"今天的日报"里出现
-# 去年的论文会让人以为工具没在更新。所以展示层按天过滤：
-# 有精确发表日期用日期，只有年份的按该年 12/31 算（宽松口径）。
-# 被过滤的论文不删除、不降分，只是进「其余候选」，仍可 decide --pid 找回。
-max_age_days: 30
+# ── 新鲜度：日报展示口径 ──────────────────────────────────────────────
+# 修正过的口径（用户 2026-10-30 澄清）：**只要是顶会，近期的都可以**，
+# 不是"只要最近几天的新论文"。
+#   · 顶会论文：近 2 年（覆盖 2025 + 2026 两届会议）——会议是年度节奏，
+#     一篇半年前在 S&P 发表的论文对读者仍然是新的；
+#   · 预印本：近 90 天——还没中会的东西必须足够新，否则价值不大。
+# 超窗的论文不删除、不降分，只进「其余候选」，仍可 decide --pid 找回。
+max_age_days: 90
+conference_max_age_days: 730
 
 # ── 阈值 ───────────────────────────────────────────────────────────
 thresholds:

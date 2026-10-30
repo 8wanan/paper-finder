@@ -43,15 +43,19 @@ VENUES = [
     ("euros&p", "EuroS&P", [r"euros\s*&\s*p", r"european symposium on security and privacy"]),
     ("usenix", "USENIX Security", [r"usenix security", r"usenix security symposium"]),
     ("ndss", "NDSS", [r"\bndss\b", r"network and distributed system security"]),
-    ("sp", "IEEE S&P", [r"\bs\s*&\s*p\b", r"security and privacy"]),
-    ("ccs", "ACM CCS", [r"\bccs\b", r"computer and communications security"]),
-    ("icse", "ICSE", [r"\bicse\b", r"international conference on software engineering"]),
-    ("fse", "FSE", [r"\bfse\b", r"esec/fse", r"foundations of software engineering"]),
-    ("issta", "ISSTA", [r"\bissta\b", r"software testing and analysis"]),
-    ("ase", "ASE", [r"\base\b", r"automated software engineering"]),
-    ("neurips", "NeurIPS", [r"\bneurips\b", r"neural information processing systems"]),
+    ("sp", "IEEE S&P", [r"\bs\s*&\s*p\b", r"ieee symposium on security and privacy"]),
+    # 全称必须带主办方前缀：实测 "Proc. IEEE/ACIS International Conference on
+    # Software Engineering, Artificial Intelligence, Networking ..." （SNPD）
+    # 会因为裸的 "international conference on software engineering" 被判成 ICSE。
+    # 加上 (ACM/IEEE|IEEE/ACM) 前缀后，"IEEE/ACIS …" 不再命中。
+    ("ccs", "ACM CCS", [r"\bccs\b", r"acm sigsac conference on computer and communications security"]),
+    ("icse", "ICSE", [r"\bicse\b", r"(acm/ieee|ieee/acm|ieee|acm) international conference on software engineering\b"]),
+    ("fse", "FSE", [r"\bfse\b", r"esec/fse", r"(acm joint european software engineering|foundations of software engineering)"]),
+    ("issta", "ISSTA", [r"\bissta\b", r"(acm sigsoft )?international symposium on software testing and analysis"]),
+    ("ase", "ASE", [r"\base\b", r"(ieee/acm|acm/ieee|ieee|acm) international conference on automated software engineering\b"]),
+    ("neurips", "NeurIPS", [r"\bneurips\b", r"(conference on )?neural information processing systems"]),
     ("icml", "ICML", [r"\bicml\b", r"international conference on machine learning"]),
-    ("iclr", "ICLR", [r"\biclr\b", r"learning representations"]),
+    ("iclr", "ICLR", [r"\biclr\b", r"international conference on learning representations"]),
     ("acl", "ACL", [r"\bacl\b", r"association for computational linguistics"]),
     ("emnlp", "EMNLP", [r"\bemnlp\b", r"empirical methods in natural language processing"]),
     ("naacl", "NAACL", [r"\bnaacl\b", r"north american chapter of the association"]),
