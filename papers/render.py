@@ -324,6 +324,18 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
         getattr(profile, "conference_max_age_days", None),
     )
 
+    # 已经判定为「丢弃」的论文不再出现 —— 否则每天都要重新划掉同一批人。
+    # `m`（稍后）与 `k`（读）仍然保留：它们是"我想读"，不是"别再给我看"。
+    dropped = {
+        pid for pid, row in store.decisions().items() if row["decision"] == "d"
+    }
+    hidden_decided = 0
+    if dropped:
+        for key in ("strong", "maybe", "review"):
+            before = len(buckets[key])
+            buckets[key] = [row for row in buckets[key] if row["pid"] not in dropped]
+            hidden_decided += before - len(buckets[key])
+
     # 简介：有则用它替代"关键词命中"那一栏
     annotations = store.annotations()
     show_summary = any(row["pid"] in annotations for row in rows)
@@ -443,6 +455,7 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
         "ledger_total": n_total,
         "buckets": {k: len(v) for k, v in buckets.items()},
         "stale_dropped": stale,
+        "decided_hidden": hidden_decided,
         "mode": "l1+l2" if has_llm else "l1-only",
         "summaries": sum(1 for row in rows if row["pid"] in annotations),
     }
