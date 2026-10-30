@@ -48,9 +48,10 @@ from .pipeline import (  # noqa: E402
     run_queries,
     seed_sync,
 )
-from .render import render_brief, short_id_for, write_sidecar  # noqa: E402
+from .render import render_brief, render_digest, short_id_for, write_sidecar  # noqa: E402
 from .sources import build_sources  # noqa: E402
 from .store import SUBSTANTIVE_MODES, Store  # noqa: E402
+from .summarize import summarize_pending  # noqa: E402
 
 DEFAULT_GOLDEN = os.path.join("tests", "golden.yaml")
 GOLDEN_FALLBACK = os.path.join("tests", "golden.example.yaml")
@@ -619,6 +620,13 @@ def cmd_daily(args, env) -> int:
         if not args.no_conferences:
             attach_recent_conferences(store, profile, run_id, log=log)
 
+        # 一句话简介：配了 LLM key 就自动补，没配就留给 agent（dump → annotate）。
+        if not getattr(args, "no_summaries", False):
+            summarize_pending(
+                store, profile, env, run_id,
+                top=int(profile.thresholds.get("strong_top") or 10), log=log,
+            )
+
         out_path, brief_stats, markdown, id_map = _render_and_write(
             store, profile, run_id, args, env, log, out_path=out_path
         )
@@ -636,6 +644,13 @@ def cmd_daily(args, env) -> int:
                 write_sidecar(latest_copy, id_map)
             except OSError as exc:
                 log(f"  ! 写 latest 副本失败（不影响主流程）：{exc}")
+
+        # 用户每天真正要看的是**一份**合并清单（标题 + 链接 + 简介）。
+        # 这里顺带刷新它：两个方向的 daily 都会走到，后跑的会把先跑的也包含进来。
+        merged, _ = _build_digest(store, None, log=log)
+        if merged:
+            digest_path, digest_latest = _write_digest(merged, None, log=log)
+            log(f"  · 合并日报：{digest_latest}")
 
     # 可选：把日报再拷一份到指定目录（比如被同步盘同步出去）
     if digest_dir and out_path:
@@ -769,6 +784,70 @@ def _digest_headline(path: str) -> str:
     except OSError:
         pass
     return ""
+
+
+DIGEST_PROFILES = ("ai-vuln-discovery", "ai-methodology")
+
+
+def _build_digest(store, names=None, log=None):
+    """把（默认两个）方向的强推合成一份 markdown；返回 (markdown, out_hint)。"""
+    log = log or (lambda msg: None)
+    items = []
+    for name in list(names or DIGEST_PROFILES):
+        name = str(name).strip()
+        if not name:
+            continue
+        try:
+            profile = load_profile(name, ROOT)
+        except FileNotFoundError:
+            log(f"  · 跳过不存在的 profile：{name}")
+            continue
+        run = store.latest_run_for_profile(profile.name, modes=SUBSTANTIVE_MODES)
+        if run is None:
+            log(f"  · {name} 还没有跑过检索，跳过")
+            continue
+        items.append((profile, run["run_id"]))
+    if not items:
+        return None, None
+    return render_digest(store, items), items
+
+
+def _write_digest(markdown, out_path=None, log=None):
+    """落盘：`digest-<date>.md`（按日期归档）+ `latest-digest.md`（固定入口）。"""
+    log = log or (lambda msg: None)
+    stamp = _dt.date.today().isoformat()
+    out_path = out_path or os.path.join(ROOT, "briefs", f"digest-{stamp}.md")
+    if not os.path.isabs(out_path):
+        out_path = os.path.join(ROOT, out_path)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as handle:
+        handle.write(markdown)
+
+    latest = os.path.join(os.path.dirname(out_path), "latest-digest.md")
+    try:
+        with open(latest, "w", encoding="utf-8") as handle:
+            handle.write(markdown)
+    except OSError as exc:
+        log(f"  ! 写 latest-digest.md 失败：{exc}")
+    return out_path, latest
+
+
+def cmd_digest(args, env) -> int:
+    """把两个方向的强推合并成一份「标题 + 链接 + 简介」的日报。"""
+    log = Log(not args.json)
+    names = args.profiles.split(",") if getattr(args, "profiles", None) else None
+    with Store(resolve_db(env)) as store:
+        markdown, _items = _build_digest(store, names, log=log)
+    if not markdown:
+        raise SystemExit("两个方向都还没有运行记录，先跑 papers.py daily")
+
+    out_path, latest = _write_digest(markdown, args.out, log=log)
+    if args.json:
+        emit({"digest": out_path, "latest": latest}, True)
+    else:
+        print(f"合并日报：{out_path}")
+        print(f"固定入口：{latest}")
+    return 0
 
 
 def cmd_latest(args, env) -> int:
@@ -1014,6 +1093,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = common(sub.add_parser("seed-sync", help="按 ID 精确抓取 profile 里的种子论文（补召回漏洞）"))
     p.set_defaults(func=cmd_seed_sync)
 
+    p = common(sub.add_parser("digest", help="合并两个方向的强推：只有标题、链接、简介"), with_profile=False)
+    p.add_argument("--profiles", default=None,
+                   help="逗号分隔的 profile 名，默认 ai-vuln-discovery,ai-methodology")
+    p.add_argument("--out", default=None, help="输出路径（默认 briefs/digest-<date>.md）")
+    p.set_defaults(func=cmd_digest)
+
     p = common(sub.add_parser("latest", help="打开/打印最近一份日报（每天看这个就行）"), with_profile=False)
     p.add_argument("--profile", default=None, help="只看某个方向；默认两个方向都列")
     p.add_argument("--open", action="store_true", help="用系统默认应用打开日报")
@@ -1054,6 +1139,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--show-maybe", dest="hide_maybe", action="store_false",
                    help="也渲染「值得扫一眼」区块（默认只给最相关的 10 篇）")
     p.add_argument("--out", default=None, help="日报输出路径（默认 briefs/daily-<profile>-<date>.md）")
+    p.add_argument("--no-summaries", dest="no_summaries", action="store_true",
+                   help="不自动补一句话简介（默认配了 LLM_API_KEY 就会补）")
     p.set_defaults(func=cmd_daily, hide_maybe=True)
 
     p = common(sub.add_parser("rescore", help="重算分数（改完 profile 用，默认覆盖整个账本）"))

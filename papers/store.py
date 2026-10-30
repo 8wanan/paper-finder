@@ -446,6 +446,24 @@ class Store:
             ).fetchone()
         return self.conn.execute("SELECT * FROM runs ORDER BY run_id DESC LIMIT 1").fetchone()
 
+    def latest_run_for_profile(self, profile_name, modes=None):
+        """取某个 profile 最近一次有实质内容的运行。
+
+        日报合并文件要同时拿两个方向的最新结果，所以不能只看"全局最新" ——
+        最后跑的那个 profile 永远会赢，另一个方向就被漏掉了（实测）。
+        """
+        if modes:
+            placeholders = ",".join("?" * len(modes))
+            return self.conn.execute(
+                f"SELECT * FROM runs WHERE mode IN ({placeholders}) AND profile=? "
+                f"ORDER BY run_id DESC LIMIT 1",
+                (*modes, profile_name),
+            ).fetchone()
+        return self.conn.execute(
+            "SELECT * FROM runs WHERE profile=? ORDER BY run_id DESC LIMIT 1",
+            (profile_name,),
+        ).fetchone()
+
     def get_run(self, run_id):
         return self.conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
 

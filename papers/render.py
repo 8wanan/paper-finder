@@ -479,6 +479,125 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
     return "\n".join(lines), id_map, stats
 
 
+def _digest_item(index: int, row, annotation) -> list:
+    """合并日报里的一篇：标题（带链接）一行，会议标签 + 一句话简介一行。"""
+    title = _escape_cell(row["title"]) or "(无标题)"
+    url = row["url"] or row["oa_url"] or ""
+    title_cell = f"[{title}]({url})" if url else title
+
+    from . import venues
+
+    venue = row["venue"]
+    key = venues.canonical(venue)
+    if key:
+        tag = f"`{venues.display(key)}`"
+    elif venues.is_preprint(venue):
+        tag = "预印本"
+    else:
+        tag = ""
+
+    lines = [f"{index}. **{title_cell}**"]
+    if annotation:
+        summary = _escape_cell(annotation["summary"])
+        body = f"{tag}｜{summary}" if tag else summary
+    else:
+        detail = None
+        if row["l1_detail"]:
+            try:
+                detail = json.loads(row["l1_detail"])
+            except (json.JSONDecodeError, TypeError):
+                detail = None
+        basis = _escape_cell(explain_l1(detail))
+        body = f"{tag}｜（待写简介）{basis}" if tag else f"（待写简介）{basis}"
+    lines.append(f"   {body}")
+    return lines
+
+
+def render_digest(store, items, today=None):
+    """把多个方向的强推合并成一份「只看标题 + 链接 + 简介」的日报。
+
+    items: [(profile, run_id)]。每个方向取强推桶、按 profile 的窗口过滤新鲜度、
+    跳过已判 `d` 的、截断到 strong_top，然后拼成一份文件。
+
+    为什么单独做一份：`brief-*.md` 是**工作台**（带分数、依据、决策列，用于回写判定），
+    而用户每天真正要看的是**清单**。两者混在一起，读者会被分数和决策列干扰。
+    """
+    today = today or _dt.date.today()
+    sections, total = [], 0
+    seen = set()
+    for profile, run_id in items:
+        if run_id is None:
+            continue
+        rows, rank_of = ranked_rows_for_run(store, run_id, profile)
+        from .screen import bucket_of, is_review_row
+
+        annotations = store.annotations()
+        has_llm = bool(
+            store.conn.execute(
+                "SELECT 1 FROM run_papers WHERE run_id=? AND l2 IS NOT NULL LIMIT 1",
+                (run_id,),
+            ).fetchone()
+        )
+        buckets = {"strong": [], "maybe": [], "review": [], "archived": []}
+        for row in rows:
+            buckets[bucket_of(row, profile, has_llm, rank=rank_of.get(row["pid"]))].append(row)
+
+        drop_stale(
+            buckets,
+            getattr(profile, "max_age_days", None),
+            getattr(profile, "conference_max_age_days", None),
+            today=today,
+        )
+        dropped = {pid for pid, row in store.decisions().items() if row["decision"] == "d"}
+        if dropped:
+            for key in ("strong", "maybe", "review"):
+                buckets[key] = [row for row in buckets[key] if row["pid"] not in dropped]
+
+        cap = int(profile.thresholds.get("strong_top") or 10)
+        # 两个方向的查询有重叠（同一篇"agent 做漏洞修复"会同时命中两条线），
+        # 合并文件里必须去重 —— 前面已经列过的论文不再重复出现，并向后补位。
+        candidates = buckets["strong"] + buckets["maybe"] + buckets["review"]
+        picked = []
+        for row in candidates:
+            if row["pid"] in seen:
+                continue
+            picked.append(row)
+            if len(picked) >= cap:
+                break
+        if not picked:
+            continue
+        for row in picked:
+            seen.add(row["pid"])
+
+        # 顶会优先：用户的口径是"只要是顶会，近期的都可以"，所以同类里先列已中会的。
+        from . import venues as venues_mod
+
+        picked.sort(key=lambda r: 0 if venues_mod.status(r["venue"]) == "conference" else 1)
+
+        title = profile.display_name.split("·")[0].strip()
+        icon = "🛡️" if "挖洞" in title else ("🧪" if "方法论" in title else "📄")
+        lines = [f"## {icon} {title} · {len(picked)} 篇", ""]
+        for index, row in enumerate(picked, 1):
+            lines.extend(_digest_item(index, row, annotations.get(row["pid"])))
+            lines.append("")
+        sections.append("\n".join(lines))
+        total += len(picked)
+
+    header = [
+        "# 每日论文速览",
+        "",
+        f"**{today.isoformat()}** · 共 **{total}** 篇 · "
+        "带 `会议名` 的是已中顶会，写「预印本」的是还没中会的新工作",
+        "",
+        "> 想标记已读/丢弃：在 `briefs/latest-<方向>.md` 的最后一列填 `k/m/d`，"
+        "再跑 `papers.py decide <该文件>`。",
+        "",
+        "---",
+        "",
+    ]
+    return "\n".join(header + sections)
+
+
 def write_sidecar(brief_path: str, id_map: dict) -> str:
     """把 短id -> pid 的映射写进 sidecar，供 decide 精确回写。"""
     path = brief_path + SIDECAR_SUFFIX
