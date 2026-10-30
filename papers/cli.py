@@ -492,7 +492,7 @@ def _harvest(args, env, mode, profile, sources, store, log):
 
 
 def _render_and_write(store, profile, run_id, args, env, log, out_path=None):
-    """打分 + 生成简报 + 落盘。返回 (out_path, brief_stats, markdown)。"""
+    """打分 + 生成简报 + 落盘。返回 (out_path, brief_stats, markdown, id_map)。"""
     # 不给 run_id：给整个账本打分。打分是纯计算（4500 篇约 3 秒），
     # 而"未打分的论文在排序里沉底"会让评测与简报都失真。
     score_stats = rescore(
@@ -507,7 +507,7 @@ def _render_and_write(store, profile, run_id, args, env, log, out_path=None):
         max_per_bucket=(int(args.max_per_bucket) or None),
     )
     if getattr(args, "stdout", False):
-        return None, brief_stats, markdown
+        return None, brief_stats, markdown, id_map
 
     if out_path is None:
         briefs_dir = os.path.join(ROOT, "briefs")
@@ -519,7 +519,7 @@ def _render_and_write(store, profile, run_id, args, env, log, out_path=None):
     with open(out_path, "w", encoding="utf-8") as handle:
         handle.write(markdown)
     write_sidecar(out_path, id_map)
-    return out_path, brief_stats, markdown
+    return out_path, brief_stats, markdown, id_map
 
 
 def _run_and_screen(args, env, mode: str) -> int:
@@ -528,7 +528,7 @@ def _run_and_screen(args, env, mode: str) -> int:
 
     with Store(resolve_db(env)) as store:
         run_id = _harvest(args, env, mode, profile, sources, store, log)
-        out_path, brief_stats, markdown = _render_and_write(store, profile, run_id, args, env, log)
+        out_path, brief_stats, markdown, id_map = _render_and_write(store, profile, run_id, args, env, log)
 
     if out_path:
         log("")
@@ -565,7 +565,7 @@ def cmd_collect(args, env) -> int:
             raise SystemExit("没有可采集的会议，检查 profile 的 conferences 段")
         if result["fetched"] == 0:
             log("  · 本次没有采到新论文（可能都已采集过，用 --force 重采）")
-        out_path, brief_stats, markdown = _render_and_write(
+        out_path, brief_stats, markdown, _id_map = _render_and_write(
             store, profile, run_id, args, env, log, out_path=args.out
         )
 
@@ -611,10 +611,23 @@ def cmd_daily(args, env) -> int:
                 only_missing=not args.force, log=log,
             )
 
-        out_path, brief_stats, markdown = _render_and_write(
+        out_path, brief_stats, markdown, id_map = _render_and_write(
             store, profile, run_id, args, env, log, out_path=out_path
         )
         store.set_meta("daily:last", f"{stamp} run#{run_id}")
+
+        # 稳定文件名：`latest-<profile>.md` 永远指向最近一份，用户不用记日期。
+        # 同时写 sidecar，否则对 latest 副本执行 `decide` 会解析不到短 id。
+        if out_path:
+            latest_copy = os.path.join(
+                os.path.dirname(out_path), f"latest-{profile.name}.md"
+            )
+            try:
+                with open(latest_copy, "w", encoding="utf-8") as handle:
+                    handle.write(markdown)
+                write_sidecar(latest_copy, id_map)
+            except OSError as exc:
+                log(f"  ! 写 latest 副本失败（不影响主流程）：{exc}")
 
     # 可选：把日报再拷一份到指定目录（比如被同步盘同步出去）
     if digest_dir and out_path:
@@ -718,6 +731,89 @@ def cmd_brief(args, env) -> int:
         for key, value in stats["buckets"].items():
             print(f"  {key:<9} {value}")
         print(f"\n简报：{out_path}")
+    return 0
+
+
+def _digest_files(profile_name: str | None = None) -> list:
+    """列出日报文件，按修改时间倒序。"""
+    briefs_dir = os.path.join(ROOT, "briefs")
+    if not os.path.isdir(briefs_dir):
+        return []
+    prefix = f"daily-{profile_name}-" if profile_name else "daily-"
+    files = [
+        os.path.join(briefs_dir, name)
+        for name in os.listdir(briefs_dir)
+        if name.startswith(prefix) and name.endswith(".md")
+    ]
+    return sorted(files, key=os.path.getmtime, reverse=True)
+
+
+def _digest_headline(path: str) -> str:
+    """从日报里抠出"本轮候选 N 篇 · 新增 M 篇"这行，用作一句话摘要。"""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for _ in range(12):
+                line = handle.readline()
+                if not line:
+                    break
+                if line.startswith("本轮候选"):
+                    return line.strip()
+    except OSError:
+        pass
+    return ""
+
+
+def cmd_latest(args, env) -> int:
+    """打印（并可打开）最近一份日报 —— 这是"每天去哪儿看"的固定入口。
+
+    为什么需要它：日报文件名带日期，用户每天要去记"今天是哪一份"。
+    `latest` 永远指向最新那份，配合 `--open` 直接调起系统默认应用。
+    """
+    profile_names = [args.profile] if args.profile else ["ai-vuln-discovery", "ai-methodology"]
+    found = []
+    for name in profile_names:
+        files = _digest_files(name)
+        if not files:
+            continue
+        path = files[0]
+        found.append(
+            {
+                "profile": name,
+                "path": path,
+                "modified": _dt.datetime.fromtimestamp(os.path.getmtime(path)).strftime(
+                    "%Y-%m-%d %H:%M"
+                ),
+                "headline": _digest_headline(path),
+            }
+        )
+
+    if not found:
+        raise SystemExit(
+            "还没有任何日报。先跑一次：\n"
+            "  python papers.py daily --profile ai-vuln-discovery\n"
+            "（定时任务每天 09:00 会自动跑）"
+        )
+
+    if args.open:
+        for item in found:
+            try:
+                os.startfile(item["path"])  # noqa: S606 - Windows 上打开默认应用
+            except AttributeError:  # 非 Windows
+                import subprocess
+
+                subprocess.run(["open" if os.uname().sysname == "Darwin" else "xdg-open",
+                                item["path"]], check=False)
+
+    if args.json:
+        emit({"digests": found}, True)
+    else:
+        for item in found:
+            print(f"[{item['profile']}] {item['modified']}")
+            print(f"  {item['path']}")
+            if item["headline"]:
+                print(f"  {item['headline']}")
+        print("\n填完最后一列的 k/m/d 后回写：")
+        print(f"  python papers.py decide {found[0]['path']}")
     return 0
 
 
@@ -909,6 +1005,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = common(sub.add_parser("seed-sync", help="按 ID 精确抓取 profile 里的种子论文（补召回漏洞）"))
     p.set_defaults(func=cmd_seed_sync)
+
+    p = common(sub.add_parser("latest", help="打开/打印最近一份日报（每天看这个就行）"), with_profile=False)
+    p.add_argument("--profile", default=None, help="只看某个方向；默认两个方向都列")
+    p.add_argument("--open", action="store_true", help="用系统默认应用打开日报")
+    p.set_defaults(func=cmd_latest)
 
     p = common(sub.add_parser("census", help="Tier A 全量普查（把领域一次读完）"))
     run_opts(p)

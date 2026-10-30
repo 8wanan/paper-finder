@@ -329,7 +329,17 @@ def collect_conferences(store, profile, sources, client, run_id=None, log=None,
             blocked[kind] = str(exc)
             log(f"    ! 该源已限流，本轮放弃：{exc}")
             continue
-        except (HttpError, LookupError, ValueError) as exc:
+        except HttpError as exc:
+            # 429 但 Retry-After 很短时，HttpClient 会先自己退避重试；重试完仍 429
+            # 就会走到这里。此时**必须把整个源判死**，否则后面每本会议都要再
+            # 重试三轮（实测：10 场会议 × 每场 ~90 秒退避 = 卡住 15 分钟）。
+            if getattr(exc, "status", None) == 429:
+                blocked[kind] = str(exc)
+                log(f"    ! 该源返回 429（额度用尽），本轮跳过其余同类会议")
+            else:
+                log(f"    ! 采集失败，跳过：{exc}")
+            continue
+        except (LookupError, ValueError) as exc:
             log(f"    ! 采集失败，跳过：{exc}")
             continue
 
