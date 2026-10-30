@@ -384,6 +384,17 @@ def _has_core_signal(row) -> bool:
     return bool(detail.get("has_core_signal"))
 
 
+def _has_title_signal(row, profile) -> bool:
+    """标题里必须命中 `scoring.title_required_any` 之一；profile 没配则直接放行。"""
+    required = getattr(profile, "title_required_any", None) or []
+    if not required:
+        return True
+    title = clean_text(row["title"] if not isinstance(row, dict) else row.get("title")).lower()
+    if not title:
+        return False
+    return any(term in title for term in required)
+
+
 def score_l1(paper, profile, query_hits: int = 0, today=None):
     """计算完整的 L1 分数，返回 (score, detail)。"""
     lex, lex_detail = score_lexical(
@@ -423,6 +434,30 @@ def score_l1(paper, profile, query_hits: int = 0, today=None):
         + L1_WEIGHTS["hit"] * hit
     )
 
+    # 扣分项（只作用标题）：benchmark / empirical study / survey 这类论文
+    # 不是无关，但不该占必读位。上限 0.24 ≈ 两个多"顶会 vs 预印本"的差距，
+    # 够把评测类论文压到方法论文下面，又不至于把它们打成不相关。
+    penalty, penalty_terms = 0.0, []
+    penalty_map = profile.penalty_term_weight_map() if hasattr(profile, "penalty_term_weight_map") else {}
+    if penalty_map:
+        hits = _find_matches(clean_text(paper.get("title")), penalty_map)
+        if hits:
+            penalty_terms = [term for _w, term in hits]
+            penalty = min(0.24, sum(w for w, _t in hits))
+
+    # 问句/观察式标题：实测这类论文（"How Deterministic SAST and AI Agents Divide
+    # the Work"、"What Do They Fix?"）几乎都是评测或经验研究，靠某个术语也能凑够
+    # 词法分。标题以疑问词开头就给一次固定扣分，比逐个列短语更省事。
+    title_lower = clean_text(paper.get("title")).lower()
+    for prefix in ("how ", "what ", "can ", "do ", "does ", "are ", "is ", "why ", "should "):
+        if title_lower.startswith(prefix):
+            penalty = min(0.24, penalty + 0.10)
+            penalty_terms.append(f"问句式标题（{prefix.strip()} …）")
+            break
+
+    if penalty:
+        total = max(0.0, total - penalty)
+
     # 种子论文分数下限。理由：种子是用户明确声明的"必读"，但它们的自然得分
     # 可能很低 —— 老论文时间衰减重、标题可能被拼错（DolphinAtack）、
     # 又没有摘要。实测 DolphinAttack 自然得分 0.40、排 117 名，
@@ -447,6 +482,8 @@ def score_l1(paper, profile, query_hits: int = 0, today=None):
         "rec": round(rec, 4),
         "seed": seed,
         "hit": round(hit, 4),
+        "penalty": round(penalty, 4),
+        "penalty_terms": penalty_terms,
         "query_hits": query_hits or 0,
         "is_seed": is_seed,
         "frozen_recency": frozen,
@@ -601,10 +638,15 @@ def bucket_of(row, profile, has_llm: bool, rank: int | None = None) -> str:
         return "review"
 
     # 4) L1-only：按名次分桶，保证简报长度与语料规模无关。
-    #    但强推桶额外要求**核心安全信号** —— 否则"水下声学识别""声乐教练"
-    #    这类词面上沾边的论文会占据强推名额（实测发生过）。
+    #    但强推桶额外要求**核心信号**：摘要级 core_terms 加上标题级
+    #    title_required_any（profile 配了才生效）—— 摘要里顺带提一句
+    #    "bug/repair" 就进必读，是实测踩过的最大的噪声来源。
     if rank is not None:
-        if rank <= thresholds["strong_top"] and _has_core_signal(row):
+        if (
+            rank <= thresholds["strong_top"]
+            and _has_core_signal(row)
+            and _has_title_signal(row, profile)
+        ):
             return "strong"
         if rank <= thresholds["maybe_top"]:
             return "maybe"

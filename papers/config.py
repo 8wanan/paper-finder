@@ -262,6 +262,36 @@ class Profile:
     def topic_term_weight_map(self) -> dict:
         return self._weight_map("topic_terms", DEFAULT_TOPIC_WEIGHTS)
 
+    def penalty_term_weight_map(self) -> dict:
+        """扣分词表（只作用标题）。
+
+        为什么需要扣分而不是 L0 直接拒：用户的口径是"我要**能挖洞的方法**"，
+        而 benchmark / empirical study / survey 这类论文并不是无关，只是
+        不该占据必读位。L0 一律拒掉会丢掉有用的评测基准，所以改成降权。
+        权重按档位固定（0.12 / 0.06 / 0.03），不在 YAML 里逐个配数字 ——
+        配了数字反而没人记得住为什么是那个数。
+        """
+        raw = self.scoring.get("penalty_terms") or {}
+        weights = {}
+        for level, weight in (("high", 0.12), ("mid", 0.06), ("low", 0.03)):
+            for term in raw.get(level) or []:
+                text = str(term).strip().lower()
+                if text:
+                    weights.setdefault(text, weight)
+        return weights
+
+    @property
+    def title_required_any(self) -> list:
+        """进强推桶必须**在标题里**命中的词（任一即可）。
+
+        为什么要单独一道门：摘要级核心信号太容易被"顺带提一句"满足 ——
+        实测一篇讲医用影像代码生成的论文，摘要里有 `bug`、`repair`，
+        就混进了挖洞强推。标题是作者对"这篇论文是什么"的自我声明，
+        拿它当门比摘要可靠得多。
+        """
+        raw = self.scoring.get("title_required_any") or []
+        return [str(v).lower() for v in raw if str(v).strip()]
+
     @property
     def core_terms(self) -> list:
         """核心安全信号词表。profile 没配就用默认（见 DEFAULT_CORE_TERMS）。"""

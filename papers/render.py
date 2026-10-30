@@ -90,6 +90,28 @@ def drop_stale(buckets, max_age_days, conference_max_age_days=None, today=None):
     return moved
 
 
+def _in_scope(row, profile) -> bool:
+    """展示前再判一次 L0（venue 口径 + 标题级负向词）。
+
+    为什么要重复判：L0 只在**入库那一刻**生效，而口径是会改的（今天就把
+    "医用影像代码生成""晶圆机器人 fuzzing"这类跑题论文加进了负向词）。
+    如果不在展示层再判一次，改完配置后旧数据仍然会出现在日报里，
+    用户会以为配置根本没生效（实测踩到）。
+    """
+    from .screen import passes_l0
+
+    paper = {
+        "title": row["title"],
+        "abstract": row["abstract"],
+        "venue": row["venue"],
+        "year": row["year"],
+        "published": row["published"],
+        "categories": json.loads(row["categories"]) if row["categories"] else [],
+    }
+    ok, _reason = passes_l0(paper, profile)
+    return ok
+
+
 def build_id_map(rows) -> dict:
     """构造 短id -> 完整pid 的映射，并保证短 id 唯一。"""
     mapping = {}
@@ -115,12 +137,40 @@ def ranked_rows_for_run(store, run_id, profile):
     排序与编号规则集中在这里，供 render_brief 与 `papers.py dump` 共用 ——
     两处若各写一份，"导出的顺序"和"简报的顺序"迟早会不一致。
 
-    排序键：**有核心安全信号的排前面**，然后按分数。
-    为什么：强推桶只收有核心安全信号的论文（见 screen.bucket_of）。如果不先按
-    这个排，前 15 名会被 LALM 通用论文占满，真正该推的反而落到 15 名以外。
-    实测 watch 运行的前 15 名里曾有 11 篇没有明确安全信号。
+    排序键：**有核心信号**的排前面，然后按分数。
+
+    重要：这里的 L1 **按传入的 profile 现算**，不读库里的 papers.l1。
+    原因（实测踩到）：一个账本服务多个方向，而 papers.l1 只有一列 ——
+    跑过一次方法论的 rescore，就会把挖洞方向的分数覆盖成方法论的尺度，
+    于是同一份日报的两个方向互相污染。现算 4500 篇约 0.2 秒，换来正确的隔离。
     """
-    from .screen import is_review_row
+    from .screen import is_review_row, score_l1
+
+    counts = {
+        row["pid"]: row["n"]
+        for row in store.conn.execute(
+            "SELECT pid, COUNT(*) AS n FROM paper_queries GROUP BY pid"
+        ).fetchall()
+    }
+
+    rows = []
+    for raw in store.run_paper_rows(run_id):
+        row = dict(raw)
+        paper = {
+            "title": row.get("title"),
+            "abstract": row.get("abstract"),
+            "categories": json.loads(row["categories"]) if row.get("categories") else [],
+            "authors": json.loads(row["authors"]) if row.get("authors") else [],
+            "sources": json.loads(row["sources"]) if row.get("sources") else [],
+            "year": row.get("year"),
+            "published": row.get("published"),
+            "venue": row.get("venue"),
+            "arxiv_id": row.get("arxiv_id"),
+        }
+        score, detail = score_l1(paper, profile, query_hits=counts.get(row["pid"], 0))
+        row["l1"] = score
+        row["l1_detail"] = json.dumps(detail, ensure_ascii=False)
+        rows.append(row)
 
     def sort_key(row):
         detail = row["l1_detail"]
@@ -137,7 +187,6 @@ def ranked_rows_for_run(store, run_id, profile):
             -(row["year"] or 0),
         )
 
-    rows = list(store.run_paper_rows(run_id))
     rows.sort(key=sort_key)
     rankable = [r for r in rows if not is_review_row(r, profile)]
     rank_of = {row["pid"]: index + 1 for index, row in enumerate(rankable)}
@@ -322,6 +371,11 @@ def render_brief(store, profile, run_id=None, has_llm=False, archived_preview=10
     buckets = {"strong": [], "maybe": [], "review": [], "archived": []}
     for row in rows:
         buckets[reviewer(row, rank_of.get(row["pid"]))].append(row)
+
+    # 口径可能改过（负向词、venue 白名单）：展示前按当前配置再判一次，
+    # 不合规的直接挪进归档，而不是让旧数据继续占位置。
+    for key in ("strong", "maybe", "review"):
+        buckets[key] = [row for row in buckets[key] if _in_scope(row, profile)]
 
     # 「只要新的」：把超过 profile.max_age_days 的论文挪进归档，
     # 不删除、不降分，只是不出现在今天的日报里。
@@ -541,6 +595,8 @@ def render_digest(store, items, today=None):
         buckets = {"strong": [], "maybe": [], "review": [], "archived": []}
         for row in rows:
             buckets[bucket_of(row, profile, has_llm, rank=rank_of.get(row["pid"]))].append(row)
+        for key in ("strong", "maybe", "review"):
+            buckets[key] = [row for row in buckets[key] if _in_scope(row, profile)]
 
         drop_stale(
             buckets,
@@ -556,7 +612,10 @@ def render_digest(store, items, today=None):
         cap = int(profile.thresholds.get("strong_top") or 10)
         # 两个方向的查询有重叠（同一篇"agent 做漏洞修复"会同时命中两条线），
         # 合并文件里必须去重 —— 前面已经列过的论文不再重复出现，并向后补位。
-        candidates = buckets["strong"] + buckets["maybe"] + buckets["review"]
+        #
+        # 只用强推桶（+ 需人工确认）：不做"从 maybe 里补位"。补位会把没过
+        # 标题门/被扣分的论文重新拉回必读区 —— 那正是今天这次返工要消灭的现象。
+        candidates = buckets["strong"] + buckets["review"]
         picked = []
         for row in candidates:
             if row["pid"] in seen:

@@ -120,14 +120,15 @@ category_probes:
 scoring:
   # 双轴门控：S_lex = S_task × (0.5 + 0.5 × S_ai)
   # 一条轴是"做的是不是漏洞工作"（task），另一条是"是不是 AI 方法"（ai）。
+  #
+  # 维度收窄（2026-10-30 用户口径）：主线是**漏洞发现**。修复/补丁类
+  # （vulnerability repair、patch generation、program repair）降为 mid ——
+  # 它们是漏洞工作，但不是"挖"，不该靠这个词拿到高分。
   task_terms:
     high:
       - vulnerability discovery
       - vulnerability detection
       - vulnerability identification
-      - vulnerability repair
-      - patch generation
-      - program repair
       - exploit generation
       - poc generation
       - exploit synthesis
@@ -142,7 +143,12 @@ scoring:
       - crash triage
       - penetration testing
       - root cause
+      - bug hunting
+      - vulnerability hunting
     mid:
+      - vulnerability repair
+      - patch generation
+      - program repair
       - vulnerability
       - exploit
       - bug
@@ -212,7 +218,6 @@ scoring:
     - fuzzing
     - exploit
     - poc
-    - program repair
     - cve
     - zero-day
     - memory safety
@@ -223,6 +228,62 @@ scoring:
     - taint analysis
     - reverse engineering
     - penetration testing
+
+  # ── 标题门：强推必须在标题里就有"漏洞信号" ──────────────────────────
+  # 摘要里顺带提一句 bug/repair 的论文（比如"医用影像代码生成"）不该占必读位。
+  title_required_any:
+    - vulnerability
+    - vulnerabilities
+    - exploit
+    - fuzz
+    - cve
+    - zero-day
+    - sanitizer
+    - memory safety
+    - attack
+    - pentest
+    - code audit
+    - security audit
+    - taint
+    - malware
+    - crash
+
+  # ── 扣分项：评测/综述类让位给「真能挖」的方法 ───────────────────────
+  # 用户口径（2026-10-30）：日报要的是**能挖洞的方法与系统**，
+  # "验证 AI 说得对不对"的评测/基准/综述类论文不该占必读位。
+  # 它们仍然保留在归档里（有参考价值），只是降权，不做 L0 拒稿。
+  penalty_terms:
+    high:
+      - empirical
+      - evaluation
+      - evaluating
+      - assessing
+      - "benchmark"
+      - benchmarking
+      - survey
+      - systematization
+      - replication study
+      - how do
+      - how well
+      - measuring
+      - characterizing
+      - understanding
+      - analysis of
+      - lens of
+      - revisited
+      - lessons from
+      - do they
+    mid:
+      - dataset
+      - case study
+      - comparison
+      - position paper
+      # 问句标题多是"评测/观察"类（"What do they fix?"/"Can LLMs find bugs?"）
+      - what do
+      - how much
+      - can llm
+      - do llms
+      - does it
 
   category_weights:
     cs.CR: 0.40
@@ -317,6 +378,21 @@ negative:
     # for Zero-Day Threats in IoT" 仅凭标题里的 zero-day 就进了强推桶。
     - intrusion detection
     - malware detection
+    # 领域跑题（实测混进过：医用影像代码生成、晶圆机器人 fuzzing、公平性调试）
+    - medical
+    - clinical
+    - imaging
+    - wafer
+    - robot
+    - robotics
+    - fairness
+    - verilog
+    - fpga
+    - test generation
+    - video
+    - advertising
+    - recommendation
+    - sentiment
   safety_overrides:
     - vulnerability
     - exploit

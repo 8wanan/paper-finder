@@ -79,6 +79,14 @@ search:
     - id: M7
       q: '(all:"test-time compute" OR all:"reasoning") AND all:"LLM" AND (all:"vulnerability" OR all:"code")'
       expect: 7435
+    # M8-M10：用户主线（RSI 自训练 / harness 创新）。2026-10-30 新增 ——
+    # 原来的 M1-M7 太宽，捞回来的是"agent 泛观察"，不是可迁移的机制创新。
+    - id: M8
+      q: '(all:"self-training" OR all:"self-improvement" OR all:"self-evolving" OR all:"self-play" OR all:"recursive self-improvement") AND (all:"agent" OR all:"LLM")'
+    - id: M9
+      q: '(all:"harness" OR all:"scaffold" OR all:"context engineering") AND (all:"agent" OR all:"LLM") AND (all:"code" OR all:"software" OR all:"security")'
+    - id: M10
+      q: '(all:"verifier" OR all:"execution feedback" OR all:"test-time") AND all:"LLM" AND (all:"code" OR all:"vulnerability" OR all:"software")'
   generation_probes:
     - id: G1
       q: '(all:"agent scaffold" OR all:"agent harness" OR all:"agent framework") AND (all:"security" OR all:"vulnerability" OR all:"code")'
@@ -93,25 +101,36 @@ search:
 scoring:
   task_terms:      # 方法轴
     high:
-      - llm agent
-      - agentic
-      - agent framework
+      # 用户口径（2026-10-30）：要的是**可迁移到挖洞系统的 AI 应用创新** ——
+      # 自训练/自我改进（RSI 那一类）、harness / scaffold、执行反馈与验证闭环、
+      # 后训练与 test-time scaling。纯"多 agent 如何协同"的观察性研究不进必读。
+      - self-improvement
+      - self-training
+      - self-play
+      - self-evolving
+      - recursive self-improvement
+      - rsi
+      - self-rewarding
+      - harness
       - agent scaffold
+      - agent framework
+      - context engineering
+      - memory compression
       - tool use
       - function calling
       - long-horizon
-      - context engineering
-      - memory compression
-      - retrieval-augmented
       - post-training
       - reinforcement learning
-      - multi-agent
       - test-time compute
-      - benchmark
-      - harness
-      - planning
       - verifier
+      - execution feedback
+      - planning
+      - llm agent
+      - agentic
     mid:
+      - multi-agent
+      - retrieval-augmented
+      - benchmark
       - agent
       - prompt
       - fine-tuning
@@ -153,17 +172,78 @@ scoring:
       - development
 
   core_terms:
-    - agent
+    # 进强推桶的必要条件：必须是"方法/机制"层面的信号。
+    # benchmark / reasoning 这类泛词已移出 —— 它们会让评测类论文顶掉方法论文。
+    - self-improvement
+    - self-training
+    - self-play
+    - self-evolving
+    - harness
+    - scaffold
     - tool use
     - function calling
-    - planning
-    - benchmark
-    - harness
-    - reasoning
-    - post-training
     - context engineering
-    - scaffold
     - verifier
+    - execution feedback
+    - post-training
+    - test-time compute
+    - planning
+
+  # ── 标题门：强推必须在标题里就声明了"方法/机制" ──────────────────────
+  # 用户口径：要的是 RSI 自训练、harness/scaffold 这类**可迁移的方法创新**，
+  # 不是"多 agent 如何协同"的观察性研究，也不是 benchmark/评测。
+  # 所以这里只放**机制词**，不放 code/security 这类领域词 —— 否则
+  # "How Deterministic SAST and AI Security Agents Divide the Work" 这类
+  # 评测对比论文会靠 security 一词混进来（实测）。
+  title_required_any:
+    - self-training
+    - self-play
+    - self-improvement
+    - self-evolving
+    - self-rewarding
+    - rsi
+    - harness
+    - scaffold
+    - context engineering
+    - memory
+    - post-training
+    - reinforcement learning
+    - verifier
+    - tool use
+    - planning
+    - distillation
+    - curriculum
+    - test-time
+    - agent framework
+
+  # ── 扣分项：评测/观察类让位给方法创新 ───────────────────────────────
+  # "多 agent 如何协同"这类观察性研究、以及 benchmark/survey 类，
+  # 对搭系统帮助有限，降权处理（仍保留在归档里）。
+  penalty_terms:
+    high:
+      - empirical study
+      - empirical evaluation
+      - "benchmark"
+      - benchmarking
+      - survey
+      - how do
+      - how well
+      - evaluation of
+      - understanding
+      - analysis of
+    mid:
+      - multi-agent collaboration
+      - agent collaboration
+      - collaborative agents
+      - comparison
+      - dataset
+      # 问句标题基本都是观察性研究（"How much does X matter?"/"Can agents do Y?"），
+      # 对搭系统帮助有限；实测它们靠 harness/agent 这类词挤进了必读位。
+      - how much
+      - can agentic
+      - can llm
+      - do agents
+      - does it
 
   category_weights:
     cs.SE: 0.35
@@ -241,6 +321,15 @@ negative:
     - machine translation
     - image generation
     - speech recognition
+    # 领域跑题（实测混进过：视频生成、广告 agent、机器人长程任务、研究品味评测）
+    - video generation
+    - advertising
+    - robot
+    - robotics
+    - wafer
+    - research agent
+    - research taste
+    - computer-use
   safety_overrides:
     - vulnerability
     - code

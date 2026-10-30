@@ -100,7 +100,7 @@ class FakeProfile:
         return []
 
 
-def paper(title, venue=None, abstract="We find vulnerabilities with an LLM agent."):
+def paper(title, venue=None, abstract="We find a vulnerability in code with an LLM agent."):
     return {
         "title": title,
         "abstract": abstract,
@@ -175,7 +175,7 @@ class TestRenderDigest(unittest.TestCase):
         self.store = Store(os.path.join(self.tmpdir, "t.db"))
         self.run_id = self.store.start_run("watch", "fake", [])
         for index in range(5):
-            pid, _ = self.store.upsert(paper(f"Paper {index}", venue="ACM CCS"))
+            pid, _ = self.store.upsert(paper(f"Vulnerability Paper {index}", venue="ACM CCS"))
             self.store.record_run_paper(self.run_id, pid, True)
             self.store.set_l1(pid, 0.9 - index * 0.05, {"has_core_signal": True})
 
@@ -186,14 +186,14 @@ class TestRenderDigest(unittest.TestCase):
     def test_caps_and_orders(self):
         profile = FakeProfile()
         markdown = render_digest(self.store, [(profile, self.run_id)])
-        self.assertIn("Paper 0", markdown)
-        self.assertLess(markdown.index("Paper 0"), markdown.index("Paper 1"))
-        self.assertNotIn("Paper 4", markdown, "超过 strong_top 的不该出现")
+        self.assertIn("Vulnerability Paper 0", markdown)
+        self.assertLess(markdown.index("Vulnerability Paper 0"), markdown.index("Vulnerability Paper 1"))
+        self.assertNotIn("Vulnerability Paper 4", markdown, "超过 strong_top 的不该出现")
 
     def test_dedupes_across_profiles(self):
         profile = FakeProfile()
         markdown = render_digest(self.store, [(profile, self.run_id), (profile, self.run_id)])
-        self.assertEqual(markdown.count("Paper 0"), 1, "同一篇不能在两个方向里各列一次")
+        self.assertEqual(markdown.count("Vulnerability Paper 0"), 1, "同一篇不能在两个方向里各列一次")
 
     def test_falls_back_when_summary_missing(self):
         markdown = render_digest(self.store, [(FakeProfile(), self.run_id)])
