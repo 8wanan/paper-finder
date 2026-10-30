@@ -129,3 +129,35 @@ all:"Whisper" AND (all:"jailbreak" OR all:"transcription" OR all:"hallucination"
 **漂移带来的实际风险**：只用 `adversarial audio` 检索，会漏掉全部 `jailbreak` 世代的论文；只用 `audio jailbreak`，会漏掉全部经典对抗样本脉络。**两代都要查，取并集。**
 
 **建议的复查动作**：每季度把当期新论文的标题喂给 LLM，让它提取"当前高频术语"，与本文档比对，补充扩展表。
+
+---
+
+## 5. AI 挖洞方向的查询教训（2026-10-30 实测）
+
+### 5.1 arXiv 的 `all:` 会做词干截断 —— 单字词不能进 Tier A
+
+| 查询 | 全时段命中 | 结论 |
+|---|---|---|
+| `all:"exploitability"` | 92,412 | 被截成 exploit，等于在查 exploit |
+| `all:"agentic"` | 84,673 | 被截成 agent（通用词） |
+| `all:"exploit generation"` | 131 | 短语才可信 |
+| `all:"PoC generation"` | 16 | 更精准 |
+
+所以 Tier A 的查询**必须用多词短语**，并显式带上 AI 侧词（`large language model` / `LLM`）。
+"这个词一定相关"的直觉在 arXiv 上不成立。
+
+### 5.2 每个 OR 组都要能独立回答"它代表什么"
+
+`(A OR B) AND (C OR D)` 的结构在 arXiv 上按"两组都命中"处理（实测有效），
+但只要把裸 `all:"agent"` 放进任一侧，命中数立刻抬到 5000+。
+
+### 5.3 这个方向的术语漂移（三代）
+
+```
+2023–2024  LLM vulnerability detection / LLM-based fuzzing
+2024–2025  agentic fuzzing / LLM agent for PoC generation / harness
+2025–2026  AI Cyber Challenge (AIxCC) / cyber reasoning system / agentic security
+```
+
+`profiles/ai-vuln-discovery.yaml` 的 `generation_probes`（G1–G3）按这三代写。
+加新查询前先跑 `papers.py search "<新词>" --since 2025-01-01 --json` 看有没有量。
