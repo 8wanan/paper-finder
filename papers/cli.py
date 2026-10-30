@@ -789,6 +789,38 @@ def _digest_headline(path: str) -> str:
 DIGEST_PROFILES = ("ai-vuln-discovery", "ai-methodology")
 
 
+def cmd_refresh(args, env) -> int:
+    """按需刷新：两个方向各跑一次 daily，最后生成合并速览。
+
+    为什么需要它：定时任务已经关掉（用户改成"看完了再说"），手动更新时
+    不该让人记三条命令。`refresh` 就是那条唯一的命令。
+    """
+    log = Log(not args.json)
+    for name in DIGEST_PROFILES:
+        sub = argparse.Namespace(**vars(args))
+        sub.profile = name
+        sub.out = None          # 各方向用自己的默认文件名
+        sub.json = False        # 内部调用不输出 JSON
+        if name == "ai-methodology":
+            # 方法论这一轨没有配 conferences，显式跳过避免无谓的告警
+            sub.no_conferences = True
+        log("")
+        log(f"── {name} ──")
+        cmd_daily(sub, env)
+
+    with Store(resolve_db(env)) as store:
+        markdown, _items = _build_digest(store, None, log=log)
+    if not markdown:
+        raise SystemExit("没有可合并的内容，检查两个方向是否都跑成功了")
+    out_path, latest = _write_digest(markdown, None, log=log)
+
+    if args.json:
+        emit({"digest": out_path, "latest": latest}, True)
+    else:
+        print(f"\n速览已更新：{latest}")
+    return 0
+
+
 def _build_digest(store, names=None, log=None):
     """把（默认两个）方向的强推合成一份 markdown；返回 (markdown, out_hint)。"""
     log = log or (lambda msg: None)
@@ -1092,6 +1124,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = common(sub.add_parser("seed-sync", help="按 ID 精确抓取 profile 里的种子论文（补召回漏洞）"))
     p.set_defaults(func=cmd_seed_sync)
+
+    p = common(sub.add_parser("refresh", help="按需更新：两个方向各跑一次，再出合并速览（定时任务已关）"),
+               with_profile=False)
+    p.add_argument("--days", type=int, default=7, help="arXiv 回溯天数，默认 7")
+    run_opts(p)
+    p.add_argument("--force", action="store_true", help="已采集过的会议也重采")
+    p.add_argument("--no-conferences", dest="no_conferences", action="store_true", help="跳过会议补录")
+    p.add_argument("--no-summaries", dest="no_summaries", action="store_true",
+                   help="不自动补一句话简介（默认配了 LLM_API_KEY 就会补）")
+    p.set_defaults(func=cmd_refresh, hide_maybe=True)
 
     p = common(sub.add_parser("digest", help="合并两个方向的强推：只有标题、链接、简介"), with_profile=False)
     p.add_argument("--profiles", default=None,

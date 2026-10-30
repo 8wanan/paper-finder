@@ -19,7 +19,7 @@ description: 为「AI 挖洞」「AI 方法论」「LLM 语音安全」等研究
 ## 何时使用
 
 ✅ **应该用**：
-- "今天/这周有什么 AI 挖洞的新论文" → `daily`
+- "今天/这周有什么 AI 挖洞的新论文" → `refresh`（按需；定时任务已关，不再每天自动跑）
 - "帮我找 AI 挖洞方向的顶会论文" → `collect` + `brief`
 - "最近 AI agent 方法论有什么进展" → `--profile ai-methodology`
 - "这篇论文相关吗" → `search "<标题片段>"` 或 `show <id>`
@@ -50,7 +50,9 @@ papers.py doctor --profile ai-vuln-discovery
 | 命令 | 用途 | 典型耗时 |
 |---|---|---|
 | `papers.py doctor` | 自检环境、配置、数据源连通性 | <30s |
-| `papers.py daily [--days N]` | **每日**：arXiv 增量 + 未采过的会议补录 → `briefs/daily-<date>.md` | 1–3 min |
+| `papers.py refresh [--days N]` | **按需更新**：两个方向各跑一次 + 合并速览 → `briefs/latest-digest.md` | 2–4 min |
+| `papers.py digest` | 只重新合并两个方向（不抓取）→ `briefs/latest-digest.md` | <5s |
+| `papers.py daily --profile X` | 单方向跑一次（refresh 的内部步骤） | 1–3 min |
 | `papers.py collect [--force]` | 整本会议采集（幂等；`--force` 重采） | 2–6 min（受 OpenAlex 配额影响） |
 | `papers.py census` | Tier A 全量普查（仅 `ai-vuln-discovery` 有） | 2–5 min |
 | `papers.py watch --days 7` | 只看增量（不采会议） | 30–60s |
@@ -86,12 +88,15 @@ papers.py doctor --profile ai-vuln-discovery
 
 ## 标准工作流
 
-### 场景 1：每日（最高频）
+### 场景 1：用户说"更新一下"（最高频）
 ```bash
-papers.py daily --profile ai-vuln-discovery     # 默认近 3 天
+papers.py refresh          # 两个方向各抓一次 + 合并速览
 ```
-→ 把 `briefs/daily-<date>.md` 给用户，**强调"新增 N 篇"**，并把「会议」列一起说清楚
-（哪些是预印本、哪些已中会）。
+→ 把 `briefs/latest-digest.md` 给用户（只有标题、链接、一句话简介，两个方向合在一份）。
+需要细节（分数/依据/决策列）时再指到 `briefs/latest-<方向>.md`。
+
+> 定时任务已关闭（用户要求"看完了会说"）。不要主动承诺"每天自动"，
+> 也不要在用户没要求时反复抓取 —— 抓取有真实网络成本。
 
 ### 场景 2：第一次配好某个方向
 ```bash
