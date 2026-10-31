@@ -34,6 +34,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from . import __version__  # noqa: E402
+from .backfill import backfill_abstracts  # noqa: E402
 from .config import DEFAULT_PROFILE, load_profile  # noqa: E402
 from .decide import apply_decisions, apply_explicit, load_sidecar, parse_brief  # noqa: E402
 from .env import load_env, mask_secret  # noqa: E402
@@ -642,6 +643,15 @@ def cmd_daily(args, env) -> int:
         if not args.no_conferences:
             attach_recent_conferences(store, profile, run_id, log=log)
 
+        # 摘要回填：ACM 会议在 OpenAlex 里常常没有摘要，没有摘要就没法写简介、
+        # 也没法做 L2。按标题去 arXiv 找同名论文把摘要补回来。
+        if not getattr(args, "no_backfill", False):
+            arxiv_src = next((s for s in sources if s.name == "arxiv"), None)
+            backfill_abstracts(
+                store, arxiv_src, profile, run_id=run_id,
+                limit=int(getattr(args, "backfill_top", 20)), log=log,
+            )
+
         # 一句话简介：配了 LLM key 就自动补，没配就留给 agent（dump → annotate）。
         if not getattr(args, "no_summaries", False):
             summarize_pending(
@@ -887,6 +897,32 @@ def _write_digest(markdown, out_path=None, log=None):
     except OSError as exc:
         log(f"  ! 写 latest-digest.md 失败：{exc}")
     return out_path, latest
+
+
+def cmd_backfill(args, env) -> int:
+    """给缺摘要的论文补 arXiv 摘要（ACM 会议在 OpenAlex 里常常没有摘要）。"""
+    log = Log(not args.json)
+    profile = load_profile(args.profile, ROOT)
+    _p, sources, _client = _prepare(args, env, log)
+    arxiv = next((s for s in sources if s.name == "arxiv"), None)
+    with Store(resolve_db(env)) as store:
+        _check_criteria(store, log)
+        run = None
+        if not args.all:
+            run = store.latest_run_for_profile(profile.name, modes=SUBSTANTIVE_MODES)
+        result = backfill_abstracts(
+            store, arxiv, profile,
+            run_id=run["run_id"] if run else None,
+            limit=int(args.top), threshold=float(args.threshold),
+            log=log, ledger_wide=bool(args.all),
+            ignore_miss_cache=bool(getattr(args, "force", False)),
+        )
+    if args.json:
+        emit(result, True)
+    else:
+        print(f"摘要回填：检查 {result['checked']}，补齐 {result['filled']}，"
+              f"未找到 {result['missed']}，跳过 {result['skipped']}")
+    return 0
 
 
 def cmd_digest(args, env) -> int:
@@ -1166,6 +1202,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", default=None, help="输出路径（默认 briefs/digest-<date>.md）")
     p.set_defaults(func=cmd_digest)
 
+    p = common(sub.add_parser("backfill", help="按标题去 arXiv 补摘要（顶会缺摘要时用）"))
+    p.add_argument("--top", type=int, default=20, help="最多检查多少篇，默认 20")
+    p.add_argument("--threshold", type=float, default=0.8, help="标题相似度阈值，默认 0.8")
+    p.add_argument("--all", action="store_true", help="不看当前运行，直接在整本账本里挑")
+    p.add_argument("--force", action="store_true", help="忽略上次的失败缓存，重新查一遍")
+    p.set_defaults(func=cmd_backfill)
+
     p = common(sub.add_parser("latest", help="打开/打印最近一份日报（每天看这个就行）"), with_profile=False)
     p.add_argument("--profile", default=None, help="只看某个方向；默认两个方向都列")
     p.add_argument("--open", action="store_true", help="用系统默认应用打开日报")
@@ -1208,6 +1251,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", default=None, help="日报输出路径（默认 briefs/daily-<profile>-<date>.md）")
     p.add_argument("--no-summaries", dest="no_summaries", action="store_true",
                    help="不自动补一句话简介（默认配了 LLM_API_KEY 就会补）")
+    p.add_argument("--no-backfill", dest="no_backfill", action="store_true",
+                   help="不按标题去 arXiv 补摘要（默认会补，顶会缺摘要时很有用）")
+    p.add_argument("--backfill-top", dest="backfill_top", type=int, default=20,
+                   help="最多回填多少篇的摘要（默认 20）")
     p.set_defaults(func=cmd_daily, hide_maybe=True)
 
     p = common(sub.add_parser("rescore", help="重算分数（改完 profile 用，默认覆盖整个账本）"))
