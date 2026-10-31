@@ -403,11 +403,18 @@ def _fetch_conference(conf, sources, client):
         if openalex is None:
             raise LookupError("需要先启用 openalex 源（--sources arxiv,openalex）")
         source_id = conf.get("source_id")
+        issn = conf.get("issn")
+        year = conf.get("year")
+        limit = int(conf.get("limit") or 1200)
+        if issn:
+            # 期刊按 ISSN 过滤（顶刊没有"年鉴"概念）；year 可选
+            filters = f"primary_location.source.issn:{issn}"
+            if year:
+                filters += f",publication_year:{int(year)}"
+            return openalex.fetch_by_filters(filters, limit=limit)
         if not source_id:
-            raise ValueError("openalex 会议条目缺少 source_id")
-        return openalex.fetch_venue(
-            source_id, year=conf.get("year"), limit=int(conf.get("limit") or 1200)
-        )
+            raise ValueError("openalex 条目需要 source_id 或 issn")
+        return openalex.fetch_venue(source_id, year=year, limit=limit)
     toc = build_toc_source(kind, client)
     if toc is None:
         raise LookupError(f"未知的会议采集器 kind={kind}")

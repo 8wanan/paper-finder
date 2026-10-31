@@ -25,6 +25,13 @@ SIDECAR_SUFFIX = ".pids.json"
 
 _DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 
+# 这三类扣分词属于"硬扣分"：命中就不进必读，而不是只降权。
+# 用户口径：日报要的是能用的方法与系统，不是"我们评估了一遍"。
+_HARD_PENALTY = {
+    "benchmark", "benchmarking", "survey", "empirical",
+    "evaluation", "evaluating", "systematization",
+}
+
 _BUCKET_TITLES = {
     "strong": "🔥 强烈建议读",
     "maybe": "📌 值得扫一眼",
@@ -110,6 +117,25 @@ def _in_scope(row, profile) -> bool:
     }
     ok, _reason = passes_l0(paper, profile)
     return ok
+
+
+def _is_fresh(row, profile, today=None) -> bool:
+    """是否在展示窗口内：会议用会议窗口，预印本用预印本窗口。"""
+    today = today or _dt.date.today()
+    when = row_date(row)
+    if when is None:
+        return True
+    from . import venues
+
+    status = venues.status(row["venue"] if not isinstance(row, dict) else row.get("venue"))
+    window = (
+        getattr(profile, "conference_max_age_days", None)
+        if status == "conference"
+        else getattr(profile, "max_age_days", None)
+    )
+    if not window:
+        return True
+    return (today - when).days <= int(window)
 
 
 def build_id_map(rows) -> dict:
@@ -585,6 +611,15 @@ def render_digest(store, items, today=None):
         rows, rank_of = ranked_rows_for_run(store, run_id, profile)
         from .screen import bucket_of, is_review_row
 
+        # 先剔掉前面方向已经列过的论文，再重排名次。
+        # 为什么必须先剔（实测踩到）：两个方向的候选池几乎一样，方法论的
+        # 前 8 名里有一半是挖洞方向的论文，去重后只剩两篇 —— 看起来像"没有
+        # 顶会论文"，其实是名次被别人的论文占掉了。
+        if seen:
+            rows = [row for row in rows if row["pid"] not in seen]
+            rankable = [row for row in rows if not is_review_row(row, profile)]
+            rank_of = {row["pid"]: index + 1 for index, row in enumerate(rankable)}
+
         annotations = store.annotations()
         has_llm = bool(
             store.conn.execute(
@@ -610,28 +645,85 @@ def render_digest(store, items, today=None):
                 buckets[key] = [row for row in buckets[key] if row["pid"] not in dropped]
 
         cap = int(profile.thresholds.get("strong_top") or 10)
-        # 两个方向的查询有重叠（同一篇"agent 做漏洞修复"会同时命中两条线），
-        # 合并文件里必须去重 —— 前面已经列过的论文不再重复出现，并向后补位。
-        #
-        # 只用强推桶（+ 需人工确认）：不做"从 maybe 里补位"。补位会把没过
-        # 标题门/被扣分的论文重新拉回必读区 —— 那正是今天这次返工要消灭的现象。
-        candidates = buckets["strong"] + buckets["review"]
-        picked = []
-        for row in candidates:
-            if row["pid"] in seen:
+        # 候选池不看"名次"，看**是否过门**：强推桶自带 rank ≤ strong_top 的限制，
+        # 而两个方向的名次是各自算的，方法论的池子里塞满了挖洞论文，去重后
+        # 名次前 8 只剩两篇 —— 于是看起来"没有顶会论文"（实测）。
+        # 这里改成：所有过门（核心信号 + 标题门 + 口径内 + 未丢弃）的论文进池，
+        # 先按"是否已发表"再按分数排。
+        from . import venues as venues_mod
+        from .screen import _has_core_signal, _has_title_signal
+
+        dropped_pids = {pid for pid, row in store.decisions().items() if row["decision"] == "d"}
+        pool = []
+        for row in rows:
+            if row["pid"] in dropped_pids or row["pid"] in seen:
                 continue
-            picked.append(row)
-            if len(picked) >= cap:
-                break
+            if not (row["abstract"] or "").strip():
+                continue
+            if not _in_scope(row, profile):
+                continue
+            if not (_has_core_signal(row) and _has_title_signal(row, profile)):
+                continue
+            if not _is_fresh(row, profile, today):
+                continue
+            # 硬扣分：benchmark / survey / empirical 这类论文即便已发表也不进必读
+            # —— 用户要的是方法，不是"我们测了一遍"。其余扣分词只降权不拦。
+            detail = {}
+            try:
+                detail = json.loads(row["l1_detail"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                detail = {}
+            if set(t.lower() for t in detail.get("penalty_terms") or []) & _HARD_PENALTY:
+                continue
+            # 多词形态（"empirical study"）也要拦：按前缀匹配而不是精确相等。
+            if any(
+                str(term).lower().startswith(tuple(_HARD_PENALTY))
+                for term in (detail.get("penalty_terms") or [])
+            ):
+                continue
+            pool.append(row)
+        pool.sort(
+            key=lambda r: (
+                0 if venues_mod.status(r["venue"]) == "conference" else 1,
+                -(r["l1"] or 0),
+            )
+        )
+        picked = pool[:cap]
         if not picked:
             continue
         for row in picked:
             seen.add(row["pid"])
 
-        # 顶会优先：用户的口径是"只要是顶会，近期的都可以"，所以同类里先列已中会的。
-        from . import venues as venues_mod
-
-        picked.sort(key=lambda r: 0 if venues_mod.status(r["venue"]) == "conference" else 1)
+        # ── 配比（用户 2026-10-31 口径）────────────────────────────────
+        # 以顶会/顶刊为主，预印本只留"最近两天发表的"少数几篇 ——
+        # 否则一屏全是刚挂 arXiv 的预印本，等于没有筛选。
+        mix = profile.data.get("digest_mix") or {}
+        if mix:
+            preprint_max = int(mix.get("preprint_max", 2))
+            preprint_days = int(mix.get("preprint_recent_days", 2))
+            fallback_days = int(mix.get("preprint_fallback_days", 14))
+            published, preprints = [], []
+            for row in picked:
+                if venues_mod.status(row["venue"]) == "conference":
+                    published.append(row)
+                    continue
+                when = row_date(row)
+                age = (today - when).days if when else 9999
+                if age <= preprint_days:
+                    preprints.append(row)
+            # 顶会论文太少时放宽预印本窗口，否则整个方向可能一篇都不剩 ——
+            # 但上限仍然只有 preprint_max 篇，不让预印本反客为主。
+            if len(published) < 2:
+                for row in picked:
+                    if venues_mod.status(row["venue"]) == "conference" or row in preprints:
+                        continue
+                    when = row_date(row)
+                    age = (today - when).days if when else 9999
+                    if age <= fallback_days:
+                        preprints.append(row)
+            picked = published + preprints[:preprint_max]
+            if not picked:
+                continue
 
         title = profile.display_name.split("·")[0].strip()
         icon = "🛡️" if "挖洞" in title else ("🧪" if "方法论" in title else "📄")

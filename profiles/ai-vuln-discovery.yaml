@@ -489,6 +489,19 @@ conferences:
     year: 2025
     kind: openalex
     source_id: S7407085879
+  # 顶刊（按 ISSN 过滤：期刊没有"年鉴"概念，只有卷期）
+  - venue: tse
+    year: 2026
+    kind: openalex
+    issn: "0098-5589"
+  - venue: tosem
+    year: 2026
+    kind: openalex
+    issn: "1049-331X"
+  - venue: tdsc
+    year: 2026
+    kind: openalex
+    issn: "1545-5971"
 
 # ── 种子论文：建议补 5–10 篇你认可的基线 ─────────────────────────────
 # 留空是刻意的：没有核实过的 arXiv ID 写进来只会制造"NOT FOUND"噪音。

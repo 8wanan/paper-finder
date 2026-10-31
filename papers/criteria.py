@@ -54,6 +54,46 @@ def _split_items(block: str) -> list:
     return out
 
 
+def _parse_mix(lines) -> dict:
+    """解析「配比」小节：`预印本上限: 2` 这样的 key: value。
+
+    只认三个键（其余忽略），因为配比就这三个自由度，多了没人记得住：
+      预印本上限     —— 每个方向最多放几篇预印本（默认 2）
+      预印本窗口天数 —— 预印本必须是最近几天的（默认 2）
+      顶会优先       —— 是否把已发表论文排在前面（默认 是）
+    """
+    aliases = {
+        "预印本上限": "preprint_max",
+        "preprint_max": "preprint_max",
+        "预印本窗口天数": "preprint_recent_days",
+        "preprint_recent_days": "preprint_recent_days",
+        "预印本放宽天数": "preprint_fallback_days",
+        "preprint_fallback_days": "preprint_fallback_days",
+        "顶会优先": "published_first",
+        "published_first": "published_first",
+    }
+    parsed = {}
+    for line in lines:
+        text = line.strip().lstrip("-*").strip()
+        if not text or text.startswith("#") or text.startswith(">"):
+            continue
+        parts = re.split(r"[:：]", text, maxsplit=1)
+        if len(parts) != 2:
+            continue
+        key = aliases.get(parts[0].strip().lower()) or aliases.get(parts[0].strip())
+        if not key:
+            continue
+        value = parts[1].strip()
+        if key == "published_first":
+            parsed[key] = value.lower() not in ("否", "false", "0", "no")
+            continue
+        try:
+            parsed[key] = int(re.sub(r"[^0-9]", "", value) or 0)
+        except ValueError:
+            continue
+    return parsed
+
+
 def load_criteria(path: str) -> dict:
     """解析准线文件，返回 {"vuln": {...}, "methodology": {...}}。"""
     if not os.path.exists(path):
@@ -68,8 +108,12 @@ def load_criteria(path: str) -> dict:
     def flush():
         nonlocal buffer
         if current_key and current_bucket and buffer:
-            result[current_key].setdefault(current_bucket, [])
-            result[current_key][current_bucket].extend(_split_items("\n".join(buffer)))
+            if current_bucket == "mix":
+                parsed = result[current_key].setdefault("mix", {})
+                parsed.update(_parse_mix(buffer))
+            else:
+                result[current_key].setdefault(current_bucket, [])
+                result[current_key][current_bucket].extend(_split_items("\n".join(buffer)))
         buffer = []
 
     for line in text.splitlines():
@@ -97,6 +141,8 @@ def load_criteria(path: str) -> dict:
                     bucket = "penalty"
                 elif "排除" in title:
                     bucket = "exclude"
+                elif "配比" in title:
+                    bucket = "mix"
                 current_bucket = bucket
             continue
         if current_bucket:
@@ -106,6 +152,8 @@ def load_criteria(path: str) -> dict:
     # 合并重复桶
     for key, buckets in result.items():
         for name, values in list(buckets.items()):
+            if name == "mix":
+                continue
             buckets[name] = _split_items("\n".join(values))
     return result
 
@@ -169,5 +217,15 @@ def apply(profile, criteria: dict | None = None, path: str | None = None) -> boo
         task["mid"] = mid
         scoring["task_terms"] = task
         changed = True
+
+    # 配比：顶会优先、预印本限量限龄（用户口径：以顶会/顶刊为主，
+    # 偶尔给一两篇近两天的新预印本）。
+    mix = section.get("mix") or {}
+    if mix:
+        current = profile.data.get("digest_mix") or {}
+        merged = {**current, **mix}
+        if merged != current:
+            profile.data["digest_mix"] = merged
+            changed = True
 
     return changed

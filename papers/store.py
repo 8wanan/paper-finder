@@ -447,21 +447,22 @@ class Store:
         return self.conn.execute("SELECT * FROM runs ORDER BY run_id DESC LIMIT 1").fetchone()
 
     def latest_run_for_profile(self, profile_name, modes=None):
-        """取某个 profile 最近一次有实质内容的运行。
+        """取某个 profile 最近一次**真的产出了论文**的运行。
 
-        日报合并文件要同时拿两个方向的最新结果，所以不能只看"全局最新" ——
-        最后跑的那个 profile 永远会赢，另一个方向就被漏掉了（实测）。
+        两个坑（都实测踩过）：
+          · 只看"全局最新"会让最后跑的那个 profile 永远赢，另一个方向被漏掉；
+          · 只看"该 profile 最新"会撞上空跑 —— 比如 collect 因限流一篇没采到，
+            仍建了一条 run，把上一份有内容的结果顶掉，日报直接空掉。
         """
+        clauses = ["r.profile=?", "EXISTS (SELECT 1 FROM run_papers rp WHERE rp.run_id=r.run_id)"]
+        params = [profile_name]
         if modes:
             placeholders = ",".join("?" * len(modes))
-            return self.conn.execute(
-                f"SELECT * FROM runs WHERE mode IN ({placeholders}) AND profile=? "
-                f"ORDER BY run_id DESC LIMIT 1",
-                (*modes, profile_name),
-            ).fetchone()
+            clauses.append(f"r.mode IN ({placeholders})")
+            params.extend(modes)
         return self.conn.execute(
-            "SELECT * FROM runs WHERE profile=? ORDER BY run_id DESC LIMIT 1",
-            (profile_name,),
+            f"SELECT r.* FROM runs r WHERE {' AND '.join(clauses)} ORDER BY r.run_id DESC LIMIT 1",
+            tuple(params),
         ).fetchone()
 
     def get_run(self, run_id):

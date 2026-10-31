@@ -128,6 +128,43 @@ class OpenAlexSource:
                     break
         return papers
 
+    def fetch_by_filters(self, filters: str, limit: int = 1200):
+        """按任意 OpenAlex filter 拉一批（会议用 source id，期刊用 ISSN）。
+
+        为什么留这个口子：期刊没有"会议年鉴"的概念，但可以按 ISSN 过滤；
+        加一个通用入口，比给每个期刊再写一个适配器省事。
+        """
+        papers = []
+        cursor = "*"
+        page = 1
+        per_page = 200
+        while len(papers) < limit:
+            params = {
+                "per-page": min(per_page, limit - len(papers)),
+                "filter": filters,
+                "select": self._select(),
+            }
+            if self.api_key:
+                params["cursor"] = cursor
+            else:
+                params["page"] = page
+            url = f"{self.endpoint}?{urllib.parse.urlencode(self._with_mailto(params))}"
+            payload = self._get(url)
+            results = payload.get("results") or []
+            if not results:
+                break
+            papers.extend(self._parse_work(work) for work in results)
+            if self.api_key:
+                cursor = (payload.get("meta") or {}).get("next_cursor")
+                if not cursor:
+                    break
+            else:
+                page += 1
+                count = int((payload.get("meta") or {}).get("count") or 0)
+                if count and len(papers) >= count:
+                    break
+        return papers
+
     def fetch_venue(self, source_id: str, year: int | None = None,
                     from_date: str | None = None, limit: int = 1200):
         """按会议（OpenAlex source id）拉整本 proceedings，**不需要关键词**。
