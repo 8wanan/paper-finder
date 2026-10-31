@@ -481,11 +481,20 @@ class Profile:
 
 
 def load_profile(name_or_path: str, root: str = ".") -> Profile:
-    """按名字或路径加载 profile。"""
+    """按名字或路径加载 profile，并套用用户维护的「准线」。"""
     if os.path.sep in name_or_path or name_or_path.endswith((".yaml", ".yml")):
         path = name_or_path if os.path.isabs(name_or_path) else os.path.join(root, name_or_path)
     else:
         path = os.path.join(root, PROFILE_DIR, f"{name_or_path}.yaml")
     if not os.path.exists(path):
         raise FileNotFoundError(f"找不到 profile：{path}")
-    return Profile(load(path), path)
+    profile = Profile(load(path), path)
+    # 准线（profiles/准线.md）是用户手改的「什么该推」的准绳，优先级高于 profile
+    # 里写死的那些词表。解析失败不该让整个命令挂掉，所以这里兜住异常。
+    try:
+        from .criteria import apply as _apply_criteria
+
+        _apply_criteria(profile, path=os.path.join(root, "profiles", "准线.md"))
+    except Exception:  # noqa: BLE001 - 准线坏了就退回 profile 原值
+        pass
+    return profile

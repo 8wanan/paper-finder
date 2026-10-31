@@ -424,6 +424,26 @@ def _select_queries(profile, args, mode: str):
     )
 
 
+def _check_criteria(store, log):
+    """准线变了就提示一句 —— 排序会自动跟着新准线走，不需要手动 rescore。
+
+    为什么只做提示不需要重算：渲染时本来就按 profile 现算 L1（见 render.
+    ranked_rows_for_run），所以准线一改，下一次出报就是新排序。
+    """
+    from .criteria import CRITERIA_FILE, digest
+
+    path = os.path.join(ROOT, CRITERIA_FILE)
+    current = digest(path)
+    if current is None:
+        return
+    last = store.get_meta("criteria:hash")
+    if last == current:
+        return
+    store.set_meta("criteria:hash", current)
+    log(f"  · 准线已更新（{(last or '首次加载')} → {current}），本轮按新准线排序")
+    log(f"    准线文件：{path}")
+
+
 def _prepare(args, env, log, extra_sources=None):
     """加载 profile / 数据源 / 客户端。三个命令共用，避免参数处理分叉。
 
@@ -530,6 +550,7 @@ def _run_and_screen(args, env, mode: str) -> int:
     profile, sources, _client = _prepare(args, env, log)
 
     with Store(resolve_db(env)) as store:
+        _check_criteria(store, log)
         run_id = _harvest(args, env, mode, profile, sources, store, log)
         out_path, brief_stats, markdown, id_map = _render_and_write(store, profile, run_id, args, env, log)
 
@@ -603,6 +624,7 @@ def cmd_daily(args, env) -> int:
     )
 
     with Store(resolve_db(env)) as store:
+        _check_criteria(store, log)
         run_id = _harvest(args, env, "watch", profile, sources, store, log)
 
         conf_result = {"conferences": 0, "fetched": 0, "new": 0, "rejected": 0, "details": []}
@@ -694,6 +716,7 @@ def cmd_rescore(args, env) -> int:
     log = Log(not args.json)
     profile = load_profile(args.profile, ROOT)
     with Store(resolve_db(env)) as store:
+        _check_criteria(store, log)
         result = rescore(
             store, profile, run_id=args.run,
             use_llm=bool(args.llm), llm_top=int(args.llm_top), env=env, log=log,
@@ -707,6 +730,7 @@ def cmd_rescore(args, env) -> int:
 def cmd_brief(args, env) -> int:
     profile = load_profile(args.profile, ROOT)
     with Store(resolve_db(env)) as store:
+        _check_criteria(store, Log(not args.json))
         run = store.get_run(args.run) if args.run else store.latest_run(modes=SUBSTANTIVE_MODES)
         if run is None:
             existing = store.stats()["papers"]
@@ -809,6 +833,7 @@ def cmd_refresh(args, env) -> int:
         cmd_daily(sub, env)
 
     with Store(resolve_db(env)) as store:
+        _check_criteria(store, log)
         markdown, _items = _build_digest(store, None, log=log)
     if not markdown:
         raise SystemExit("没有可合并的内容，检查两个方向是否都跑成功了")

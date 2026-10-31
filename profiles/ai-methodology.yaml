@@ -87,6 +87,11 @@ search:
       q: '(all:"harness" OR all:"scaffold" OR all:"context engineering") AND (all:"agent" OR all:"LLM") AND (all:"code" OR all:"software" OR all:"security")'
     - id: M10
       q: '(all:"verifier" OR all:"execution feedback" OR all:"test-time") AND all:"LLM" AND (all:"code" OR all:"vulnerability" OR all:"software")'
+    # M11-M12：用户新增的两条主线 —— 代码审计方法论、AI 自身的上下文/召回问题
+    - id: M11
+      q: '(all:"code review" OR all:"code audit" OR all:"static analysis" OR all:"program analysis") AND (all:"LLM" OR all:"agent")'
+    - id: M12
+      q: '(all:"long-context" OR all:"context retrieval" OR all:"memory" OR all:"recall") AND (all:"LLM agent" OR all:"agentic" OR all:"LLM")'
   generation_probes:
     - id: G1
       q: '(all:"agent scaffold" OR all:"agent harness" OR all:"agent framework") AND (all:"security" OR all:"vulnerability" OR all:"code")'
